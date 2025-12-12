@@ -1,0 +1,78 @@
+name: Auto Tag & Release
+
+on:
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next version
+        id: semver
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest="$(git tag -l 'v*' --sort=-v:refname | head -n1 || true)"
+          if [[ -z "${latest}" ]]; then
+            latest="v0.0.0"
+          fi
+
+          ver="${latest#v}"
+          IFS='.' read -r major minor patch <<<"${ver}"
+          major="${major:-0}"
+          minor="${minor:-0}"
+          patch="${patch:-0}"
+
+          branch="${GITHUB_REF_NAME}"
+          if [[ "${branch}" == "main" ]]; then
+            major=$((major + 1))
+            minor=0
+            patch=0
+          else
+            minor=$((minor + 1))
+            patch=0
+          fi
+
+          next="v${major}.${minor}.${patch}"
+          echo "latest=${latest} -> next=${next} (branch=${branch})"
+          echo "next=${next}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create and push tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.semver.outputs.next }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git rev-parse "${tag}" >/dev/null 2>&1; then
+            echo "Tag ${tag} already exists. Skipping."
+            echo "created=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          git tag "${tag}"
+          git push origin "${tag}"
+          echo "created=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Create GitHub Release
+        if: steps.tag.outputs.created == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.semver.outputs.next }}
+          generate_release_notes: true
