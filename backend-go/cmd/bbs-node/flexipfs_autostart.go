@@ -25,6 +25,13 @@ func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride string) (*
 		return nil, nil
 	}
 
+	// If a local Flexible-IPFS is already running on the target base URL,
+	// don't start a second instance (avoids port conflicts).
+	if isFlexIPFSUp(ctx, baseURL) {
+		log.Printf("flex-ipfs already running at %s", baseURL)
+		return nil, nil
+	}
+
 	flexBaseDir, runtimeDir, err := resolveFlexDirs(baseDirOverride)
 	if err != nil {
 		return nil, err
@@ -185,6 +192,18 @@ func waitForFlexIPFS(ctx context.Context, baseURL string, timeout time.Duration)
 	log.Printf("flex-ipfs API not ready after %s", timeout)
 }
 
+func isFlexIPFSUp(ctx context.Context, baseURL string) bool {
+	endpoint := strings.TrimRight(baseURL, "/") + "/dht/peerlist"
+	client := &http.Client{Timeout: 1 * time.Second}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	resp, err := client.Do(req)
+	if err != nil || resp == nil {
+		return false
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode >= 200 && resp.StatusCode < 500
+}
+
 func dirExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && st.IsDir()
@@ -194,4 +213,3 @@ func fileExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && !st.IsDir()
 }
-

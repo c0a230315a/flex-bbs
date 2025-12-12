@@ -1,0 +1,22 @@
+# Build outputs
+/backend-go/bbs-node
+/backend-go/bbs-node.exe
+/dist/
+/bundle-*/
+
+# Flexible-IPFS runtime data (node identity, datastore, logs)
+/flexible-ipfs-base/.ipfs/
+/flexible-ipfs-base/getdata/
+/flexible-ipfs-base/providers/
+
+# Logs / temporary files
+*.log
+*.tmp
+*.swp
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
