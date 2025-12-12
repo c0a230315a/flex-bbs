@@ -9,28 +9,20 @@ This repo currently contains:
 - `backend-go/` – Go backend node `bbs-node` (currently a minimal health-check stub).
 - `src/BbsClient/` – placeholder for the future C# UI.
 
-## Prebuilt (compiled) binaries
+## Prebuilt bundle (one download)
 
-GitHub Actions builds `bbs-node` for Linux / Windows / macOS and uploads them as artifacts.
+GitHub Actions builds OS‑specific bundles that include everything needed:
 
-1. Download the latest artifact from GitHub Actions (or Releases if you publish them):
-   - `bbs-node-linux-amd64`
-   - `bbs-node-windows-amd64.exe`
-   - `bbs-node-darwin-amd64`
-2. Keep `flexible-ipfs-base/` and `flexible-ipfs-runtime/` from this repo next to the binary.
-3. Start Flexible‑IPFS:
-   - Linux / macOS:
-     ```bash
-     cd flexible-ipfs-base
-     ./run.sh
-     ```
-   - Windows:
-     ```bat
-     cd flexible-ipfs-base
-     run.bat
-     ```
-   These scripts use the bundled JRE, so you don’t need to install Java separately.
-4. In another terminal, start `bbs-node`:
+- `bbs-node` binary
+- `flexible-ipfs-base/` (jars + scripts)
+- `flexible-ipfs-runtime/<os>/jre` (bundled Java 17 for that OS)
+
+1. Download the latest artifact from GitHub Actions:
+   - Linux: `flex-bbs-linux-amd64.tar.gz`
+   - Windows: `flex-bbs-windows-amd64.zip`
+   - macOS: `flex-bbs-darwin-amd64.tar.gz`
+2. Extract it. The folder contains `bbs-node-*` plus `flexible-ipfs-*` directories.
+3. Run `bbs-node` (it autostarts Flexible‑IPFS by default):
    - Linux / macOS:
      ```bash
      ./bbs-node-linux-amd64 --role=client --http 127.0.0.1:8080
@@ -39,7 +31,8 @@ GitHub Actions builds `bbs-node` for Linux / Windows / macOS and uploads them as
      ```bat
      bbs-node-windows-amd64.exe --role=client --http 127.0.0.1:8080
      ```
-5. Sanity check:
+   If you want to start Flexible‑IPFS yourself, add `--autostart-flexipfs=false`.
+4. Sanity check:
    ```bash
    curl http://127.0.0.1:8080/healthz
    ```
@@ -80,7 +73,8 @@ The binary is created at `backend-go/bbs-node`.
 
 ### Run
 
-Same as the “Prebuilt binaries” section, but start the local build:
+If you run from the repo root, `bbs-node` will also autostart Flexible‑IPFS (same as the bundle).
+Start the local build:
 
 ```bash
 ./backend-go/bbs-node --role=client --http 127.0.0.1:8080
@@ -90,4 +84,3 @@ Same as the “Prebuilt binaries” section, but start the local build:
 
 - On first run, `flexible-ipfs-base/run.sh` and `run.bat` auto‑create `providers/`, `getdata/`, and `attr`.
 - The Go backend currently only exposes `/healthz`; BBS APIs are still TODO.
-

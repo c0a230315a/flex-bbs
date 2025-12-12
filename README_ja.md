@@ -9,28 +9,20 @@
 - `backend-go/` – Go 製バックエンドノード `bbs-node`（現在はヘルスチェックのみの最小スタブ）。
 - `src/BbsClient/` – 将来の C# UI 用の置き場（まだ未実装）。
 
-## コンパイル版（配布バイナリ）の動かし方
+## コンパイル版（配布バンドル）の動かし方（1回のダウンロード）
 
-GitHub Actions により Linux / Windows / macOS 向けに `bbs-node` をコンパイルし、Artifacts としてアップロードします。
+GitHub Actions で OS 別の「全部入りバンドル」を作成します。内容:
 
-1. GitHub Actions（またはリリース）から最新の artifact を取得:
-   - `bbs-node-linux-amd64`
-   - `bbs-node-windows-amd64.exe`
-   - `bbs-node-darwin-amd64`
-2. 取得したバイナリの近くに、このリポジトリの `flexible-ipfs-base/` と `flexible-ipfs-runtime/` を置きます。
-3. Flexible‑IPFS を起動:
-   - Linux / macOS:
-     ```bash
-     cd flexible-ipfs-base
-     ./run.sh
-     ```
-   - Windows:
-     ```bat
-     cd flexible-ipfs-base
-     run.bat
-     ```
-   これらは同梱 JRE を使うため、別途 Java をインストールする必要はありません。
-4. 別ターミナルで `bbs-node` を起動:
+- `bbs-node` バイナリ
+- `flexible-ipfs-base/`（jar と起動スクリプト）
+- `flexible-ipfs-runtime/<os>/jre`（その OS 用の同梱 Java 17）
+
+1. GitHub Actions から最新の artifact を取得:
+   - Linux: `flex-bbs-linux-amd64.tar.gz`
+   - Windows: `flex-bbs-windows-amd64.zip`
+   - macOS: `flex-bbs-darwin-amd64.tar.gz`
+2. 展開すると `bbs-node-*` と `flexible-ipfs-*` が同じフォルダに入っています。
+3. `bbs-node` を起動します（デフォルトで Flexible‑IPFS を自動起動します）:
    - Linux / macOS:
      ```bash
      ./bbs-node-linux-amd64 --role=client --http 127.0.0.1:8080
@@ -39,7 +31,8 @@ GitHub Actions により Linux / Windows / macOS 向けに `bbs-node` をコン�
      ```bat
      bbs-node-windows-amd64.exe --role=client --http 127.0.0.1:8080
      ```
-5. 動作確認:
+   Flexible‑IPFS を手動で起動したい場合は `--autostart-flexipfs=false` を付けてください。
+4. 動作確認:
    ```bash
    curl http://127.0.0.1:8080/healthz
    ```
@@ -80,7 +73,8 @@ go build ./cmd/bbs-node
 
 ### 起動
 
-Flexible‑IPFS を起動したあと、ローカルビルドした `bbs-node` を起動します:
+リポジトリ直下から起動する場合も、配布バンドルと同様に Flexible‑IPFS を自動起動します。
+ローカルビルドした `bbs-node` を起動:
 
 ```bash
 ./backend-go/bbs-node --role=client --http 127.0.0.1:8080
@@ -90,4 +84,3 @@ Flexible‑IPFS を起動したあと、ローカルビルドした `bbs-node` �
 
 - 初回起動時に必要な `providers/`, `getdata/`, `attr` は `run.sh` / `run.bat` が自動生成します。
 - Go バックエンドは現状 `/healthz` のみ実装済みで、BBS API は未実装です。
-

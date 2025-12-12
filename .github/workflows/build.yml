@@ -16,12 +16,18 @@ jobs:
           - goos: linux
             goarch: amd64
             ext: ""
+            runtime_dir: linux-x64
+            archive: tar
           - goos: windows
             goarch: amd64
             ext: ".exe"
+            runtime_dir: win-x64
+            archive: zip
           - goos: darwin
             goarch: amd64
             ext: ""
+            runtime_dir: osx-x64
+            archive: tar
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -41,8 +47,43 @@ jobs:
           mkdir -p ../dist
           go build -trimpath -ldflags "-s -w" -o ../dist/bbs-node-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} ./cmd/bbs-node
 
+      - name: Create distribution bundle
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          EXT: ${{ matrix.ext }}
+          RUNTIME_DIR: ${{ matrix.runtime_dir }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          BUNDLE="bundle-${GOOS}-${GOARCH}"
+          export BUNDLE
+          mkdir -p "${BUNDLE}"
+
+          # bbs-node binary
+          cp "dist/bbs-node-${GOOS}-${GOARCH}${EXT}" "${BUNDLE}/"
+
+          # Flexible-IPFS base (jars + scripts)
+          cp -a flexible-ipfs-base "${BUNDLE}/flexible-ipfs-base"
+
+          # Bundled JRE for this OS only
+          mkdir -p "${BUNDLE}/flexible-ipfs-runtime/${RUNTIME_DIR}"
+          cp -a "flexible-ipfs-runtime/${RUNTIME_DIR}/jre" "${BUNDLE}/flexible-ipfs-runtime/${RUNTIME_DIR}/"
+
+          if [[ "${ARCHIVE}" == "zip" ]]; then
+            python - <<'PY'
+import os, shutil
+bundle = os.environ["BUNDLE"]
+out_base = os.path.join("dist", f"flex-bbs-{os.environ['GOOS']}-{os.environ['GOARCH']}")
+shutil.make_archive(out_base, "zip", bundle)
+print(out_base + ".zip")
+PY
+          else
+            tar -czf "dist/flex-bbs-${GOOS}-${GOARCH}.tar.gz" "${BUNDLE}"
+          fi
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bbs-node-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/bbs-node-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          name: flex-bbs-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/flex-bbs-${{ matrix.goos }}-${{ matrix.goarch }}.*
