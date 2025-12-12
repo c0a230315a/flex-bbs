@@ -21,6 +21,7 @@ GitHub Actions builds OS‑specific bundles that include everything needed:
    - Linux: `flex-bbs-linux-amd64.tar.gz`
    - Windows: `flex-bbs-windows-amd64.zip`
    - macOS: `flex-bbs-darwin-amd64.tar.gz`
+   Releases tagged from `main` are stable; tags from `develop` are marked as pre‑releases.
 2. Extract it. The folder contains `bbs-node-*` plus `flexible-ipfs-*` directories.
 3. Run `bbs-node` (it autostarts Flexible‑IPFS by default):
    - Linux / macOS:

@@ -21,6 +21,7 @@ GitHub Actions で OS 別の「全部入りバンドル」を作成します。�
    - Linux: `flex-bbs-linux-amd64.tar.gz`
    - Windows: `flex-bbs-windows-amd64.zip`
    - macOS: `flex-bbs-darwin-amd64.tar.gz`
+   `main` から切られるタグは安定版、`develop` から切られるタグは pre‑release として扱われます。
 2. 展開すると `bbs-node-*` と `flexible-ipfs-*` が同じフォルダに入っています。
 3. `bbs-node` を起動します（デフォルトで Flexible‑IPFS を自動起動します）:
    - Linux / macOS:
