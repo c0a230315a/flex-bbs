@@ -71,13 +71,7 @@ jobs:
           cp -a "flexible-ipfs-runtime/${RUNTIME_DIR}/jre" "${BUNDLE}/flexible-ipfs-runtime/${RUNTIME_DIR}/"
 
           if [[ "${ARCHIVE}" == "zip" ]]; then
-            python - <<'PY'
-import os, shutil
-bundle = os.environ["BUNDLE"]
-out_base = os.path.join("dist", f"flex-bbs-{os.environ['GOOS']}-{os.environ['GOARCH']}")
-shutil.make_archive(out_base, "zip", bundle)
-print(out_base + ".zip")
-PY
+            python3 -c "import os, shutil; bundle=os.environ['BUNDLE']; out_base=os.path.join('dist', f\"flex-bbs-{os.environ['GOOS']}-{os.environ['GOARCH']}\"); shutil.make_archive(out_base, 'zip', bundle)"
           else
             tar -czf "dist/flex-bbs-${GOOS}-${GOARCH}.tar.gz" "${BUNDLE}"
           fi
