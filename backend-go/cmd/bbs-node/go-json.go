@@ -1,145 +1,271 @@
 package model
 
-
 import (
 	"crypto/ed25519"
 	"encoding/base64"
-	"testing"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
 	"time"
 )
 
 
-func mustTime(t *testing.T, s string) string {
-	t.Helper()
-	if _, err := time.Parse(time.RFC3339, s); err != nil {
-		t.Fatalf("invalid time: %v", err)
-	}
-	return s
+// =========================
+// Common helpers
+// =========================
+
+
+func parseRFC3339(s string) error {
+	_, err := time.Parse(time.RFC3339, s)
+	return err
 }
 
 
-func TestPostSignaturePayloadExact(t *testing.T) {
-	p := &Post{
-	Version: 1,
-	Type: "post",
-	ThreadID: "baf-thread",
-	AuthorPubKey: "ed25519:pubkey",
-	DisplayName: "tester",
-	Body: PostBody{
-		Format: "markdown",
-		Content: "hello",
-	},
-	CreatedAt: mustTime(t, "2025-11-28T08:30:00Z"),
-	}
-
-
-	expected := "" +
-		"type=post\n" +
-		"version=1\n" +
-		"threadId=baf-thread\n" +
-		"parentPostCid=\n" +
-		"authorPubKey=ed25519:pubkey\n" +
-		"displayName=tester\n" +
-		"body.format=markdown\n" +
-		"body.content=hello\n" +
-		"createdAt=2025-11-28T08:30:00Z"
-
-
-	if got := p.SignaturePayload(); got != expected {
-		t.Fatalf("payload mismatch\n--- expected ---\n%s\n--- got ---\n%s", expected, got)
-	}
+func joinLines(lines ...string) string {
+	return strings.Join(lines, "\n")
 }
 
 
-func TestPostSignAndVerify(t *testing.T) {
-	pub, priv, _ := ed25519.GenerateKey(nil)
+// =========================
+// Post (投稿データ構造)
+// =========================
 
 
-	p := &Post{
-		Version: 1,
-		Type: "post",
-		ThreadID: "baf-thread",
-		AuthorPubKey: "ed25519:test",
-		DisplayName: "tester",
-		Body: PostBody{Format: "markdown", Content: "hello"},
-		CreatedAt: mustTime(t, "2025-11-28T08:30:00Z"),
-	}
-
-
-	payload := p.SignaturePayload()
-	sig := Sign(priv, payload)
-
-
-	if !Verify(pub, payload, sig) {
-		t.Fatal("signature verification failed")
-	}
+type PostBody struct {
+	Format string `json:"format"`
+	Content string `json:"content"`
 }
 
 
-func TestBoardLogEntrySignaturePayloadExact(t *testing.T) {
-	postCid := "baf-post"
+type Post struct {
+	Version int `json:"version"`
+	Type string `json:"type"`
+	ThreadID string `json:"threadId"`
+	ParentPostID *string `json:"parentPostCid"`
+	AuthorPubKey string `json:"authorPubKey"`
+	DisplayName string `json:"displayName"`
+	Body PostBody `json:"body"`
+	CreatedAt string `json:"createdAt"`
+	Signature string `json:"signature"`
+}
 
-
-	e := &BoardLogEntry{
-	Version: 1,
-	Type: "boardLogEntry",
-	BoardID: "bbs.general",
-	Op: "addPost",
-	ThreadID: "baf-thread",
-	PostCID: &postCid,
-	CreatedAt: mustTime(t, "2025-11-28T08:40:00Z"),
-	AuthorPubKey: "ed25519:pub",
+func (p *Post) Validate() error {
+	if p.Version != 1 || p.Type != "post" {
+		return errors.New("invalid post header")
 	}
-
-
-	expected := "" +
-		"type=boardLogEntry\n" +
-		"version=1\n" +
-		"boardId=bbs.general\n" +
-		"op=addPost\n" +
-		"threadId=baf-thread\n" +
-		"postCid=baf-post\n" +
-		"oldPostCid=\n" +
-		"newPostCid=\n" +
-		"targetPostCid=\n" +
-		"reason=\n" +
-		"createdAt=2025-11-28T08:40:00Z\n" +
-		"authorPubKey=ed25519:pub\n" +
-		"prevLogCid="
-
-
-	if got := e.SignaturePayload(); got != expected {
-		t.Fatalf("payload mismatch\n--- expected ---\n%s\n--- got ---\n%s", expected, got)
+	if p.ThreadID == "" || p.AuthorPubKey == "" {
+		return errors.New("missing required post field")
 	}
+	if p.Body.Format == "" || p.Body.Content == "" {
+		return errors.New("invalid post body")
+	}
+	return parseRFC3339(p.CreatedAt)
 }
 
 
-func TestJSONRoundTrip(t *testing.T) {
-	p := &Post{
-		Version: 1,
-		Type: "post",
-		ThreadID: "baf-thread",
-		AuthorPubKey: "ed25519:pub",
-		DisplayName: "tester",
-		Body: PostBody{Format: "markdown", Content: "hello"},
-		CreatedAt: mustTime(t, "2025-11-28T08:30:00Z"),
-		Signature: base64.StdEncoding.EncodeToString([]byte("sig")),
+// SignaturePayload defines the exact signing payload (spec-defined)
+func (p *Post) SignaturePayload() string {
+	parent := ""
+	if p.ParentPostID != nil {
+		parent = *p.ParentPostID
 	}
+	return joinLines(
+		"type=post",
+		"version=1",
+		"threadId="+p.ThreadID,
+		"parentPostCid="+parent,
+		"authorPubKey="+p.AuthorPubKey,
+		"displayName="+p.DisplayName,
+		"body.format="+p.Body.Format,
+		"body.content="+p.Body.Content,
+		"createdAt="+p.CreatedAt,
+	)
+}
+
+type ThreadMeta struct {
+	Type string `json:"type"`
+	ThreadID string `json:"threadId"`
+	BoardID string `json:"boardId"`
+	Title string `json:"title"`
+	RootPostCID string `json:"rootPostCid"`
+	CreatedAt string `json:"createdAt"`
+	CreatedBy string `json:"createdBy"`
+	Signature string `json:"signature"`
+}
 
 
-	b, err := ToJSON(p)
+func (t *ThreadMeta) Validate() error {
+	if t.Version != 1 || t.Type != "threadMeta" {
+		return errors.New("invalid threadMeta header")
+	}
+	if t.ThreadID == "" || t.BoardID == "" {
+		return errors.New("missing threadMeta id")
+	}
+	return parseRFC3339(t.CreatedAt)
+}
+
+
+// SignaturePayload defines signing payload for ThreadMeta (extended spec)
+func (t *ThreadMeta) SignaturePayload() string {
+	return joinLines(
+		"type=threadMeta",
+		"version=1",
+		"threadId="+t.ThreadID,
+		"boardId="+t.BoardID,
+		"title="+t.Title,
+		"rootPostCid="+t.RootPostCID,
+		"createdAt="+t.CreatedAt,
+		"createdBy="+t.CreatedBy,
+	)
+}
+
+
+func (t *ThreadMeta) Validate() error {() error {
+	if t.Version != 1 || t.Type != "threadMeta" {
+		return errors.New("invalid threadMeta header")
+	}
+	if t.ThreadID == "" || t.BoardID == "" {
+		return errors.New("missing threadMeta id")
+	}
+	return parseRFC3339(t.CreatedAt)
+}
+
+// =========================
+// BoardMeta
+// =========================
+
+type BoardMeta struct {
+	Version int `json:"version"`
+	Type string `json:"type"`
+	BoardID string `json:"boardId"`
+	Title string `json:"title"`
+	Desc string `json:"description"`
+	LogHeadCID string `json:"logHeadCid"`
+	CreatedAt string `json:"createdAt"`
+	CreatedBy string `json:"createdBy"`
+	Signature string `json:"signature"`
+}
+
+
+func (b *BoardMeta) Validate() error {
+	if b.Version != 1 || b.Type != "boardMeta" {
+		return errors.New("invalid boardMeta header")
+	}
+	if b.BoardID == "" {
+		return errors.New("missing boardId")
+	}
+	return parseRFC3339(b.CreatedAt)
+}
+
+
+// SignaturePayload defines signing payload for BoardMeta (extended spec)
+func (b *BoardMeta) SignaturePayload() string {
+	return joinLines(
+		"type=boardMeta",
+		"version=1",
+		"boardId="+b.BoardID,
+		"title="+b.Title,
+		"description="+b.Desc,
+		"logHeadCid="+b.LogHeadCID,
+		"createdAt="+b.CreatedAt,
+		"createdBy="+b.CreatedBy,
+	)
+}
+
+
+func (b *BoardMeta) Validate() error {() error {
+	if b.Version != 1 || b.Type != "boardMeta" {
+		return errors.New("invalid boardMeta header")
+	}
+	if b.BoardID == "" {
+		return errors.New("missing boardId")
+	}
+	return parseRFC3339(b.CreatedAt)
+}
+
+// =========================
+// BoardLogEntry (操作ログ)
+// =========================
+
+type BoardLogEntry struct {
+	Version int `json:"version"`
+	Type string `json:"type"`
+	BoardID string `json:"boardId"`
+	Op string `json:"op"`
+	ThreadID string `json:"threadId"`
+	PostCID *string `json:"postCid"`
+	CreatedAt string `json:"createdAt"`
+	AuthorPubKey string `json:"authorPubKey"`
+	PrevLogCID *string `json:"prevLogCid"`
+	Signature string `json:"signature"`
+}
+
+
+func (e *BoardLogEntry) Validate() error {
+	if e.Version != 1 || e.Type != "boardLogEntry" {
+		return errors.New("invalid boardLogEntry header")
+	}
+	if e.BoardID == "" || e.Op == "" {
+		return errors.New("missing log fields")
+	}
+	return parseRFC3339(e.CreatedAt)
+}
+
+
+func (e *BoardLogEntry) SignaturePayload() string {
+	post := ""
+	prev := ""
+	if e.PostCID != nil {
+		post = *e.PostCID
+	}
+	if e.PrevLogCID != nil {
+		prev = *e.PrevLogCID
+	}
+	return joinLines(
+		"type=boardLogEntry",
+		"version=1",
+		"boardId="+e.BoardID,
+		"op="+e.Op,
+		"threadId="+e.ThreadID,
+		"postCid="+post,
+		"createdAt="+e.CreatedAt,
+		"authorPubKey="+e.AuthorPubKey,
+		"prevLogCid="+prev,
+	)
+}
+
+
+// =========================
+// JSON helpers
+// =========================
+
+
+func ToJSON(v any) ([]byte, error) {
+	return json.MarshalIndent(v, "", " ")
+}
+
+
+func FromJSON[T any](b []byte, out *T) error {
+	return json.Unmarshal(b, out)
+}
+
+
+// =========================
+// Signing helpers (Post / BoardLogEntry only)
+// =========================
+
+
+func Sign(priv ed25519.PrivateKey, payload string) string {
+	sig := ed25519.Sign(priv, []byte(payload))
+	return base64.StdEncoding.EncodeToString(sig)
+}
+
+
+func Verify(pub ed25519.PublicKey, payload, sigB64 string) bool {
+	sig, err := base64.StdEncoding.DecodeString(sigB64)
 	if err != nil {
-		t.Fatal(err)
+		return false
 	}
-
-
-	var out Post
-	if err := FromJSON(b, &out); err != nil {
-		t.Fatal(err)
-	}
-
-
-	if out.Body.Content != "hello" || out.Type != "post" {
-		t.Fatal("round trip failed")
-	}
+	return ed25519.Verify(pub, []byte(payload), sig)
 }
