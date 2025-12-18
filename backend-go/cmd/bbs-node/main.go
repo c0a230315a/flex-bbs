@@ -19,6 +19,7 @@ var (
 	flexIPFSBase     = flag.String("flexipfs-base-url", "http://127.0.0.1:5001/api/v0", "Flexible-IPFS HTTP API base URL")
 	flexIPFSBaseDir  = flag.String("flexipfs-base-dir", "", "path to flexible-ipfs-base (auto-detected if empty)")
 	autoStartFlexIPFS = flag.Bool("autostart-flexipfs", true, "auto start local Flexible-IPFS if not running")
+	boardsConfig     = flag.String("boards-config", "", "path to boards config JSON (optional)")
 	httpAddr         = flag.String("http", "127.0.0.1:8080", "HTTP listen address")
 )
 
@@ -76,6 +77,13 @@ func main() {
 	r := resolveRole(*role)
 	feats := featuresForRole(r)
 	log.Printf("node role=%s features: client=%t indexer=%t archiver=%t", r, feats.enableClient, feats.enableIndexer, feats.enableArchiver)
+
+	// BoardMeta 一覧をロードして公開APIを登録
+	boards, err := loadBoardMetaConfig(*boardsConfig)
+	if err != nil {
+		log.Fatalf("failed to load boards config: %v", err)
+	}
+	registerBoardsHTTP(http.DefaultServeMux, boards)
 
 	var flexProc *flexIPFSProc
 	if *autoStartFlexIPFS {

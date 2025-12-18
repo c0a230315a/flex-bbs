@@ -23,23 +23,6 @@ func (h *APIHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/search/posts", h.handleSearchPosts)
 	mux.HandleFunc("/api/v1/search/threads", h.handleSearchThreads)
 
-	// boards
-	mux.HandleFunc("/api/v1/boards", h.handleListBoards)
-	mux.HandleFunc("/api/v1/boards/", func(w http.ResponseWriter, r *http.Request) {
-		// /api/v1/boards/{boardID} or /api/v1/boards/{boardID}/threads
-		path := strings.TrimPrefix(r.URL.Path, "/api/v1/boards/")
-		parts := strings.Split(strings.Trim(path, "/"), "/")
-		if len(parts) == 1 {
-			h.handleBoardDetail(w, r.WithContext(context.WithValue(r.Context(), ctxKeyBoardID, parts[0])))
-			return
-		}
-		if len(parts) == 2 && parts[1] == "threads" {
-			h.handleBoardThreads(w, r.WithContext(context.WithValue(r.Context(), ctxKeyBoardID, parts[0])))
-			return
-		}
-		http.NotFound(w, r)
-	})
-
 	// threads
 	mux.HandleFunc("/api/v1/threads/", func(w http.ResponseWriter, r *http.Request) {
 		// /api/v1/threads/{threadID} or /api/v1/threads/{threadID}/posts
