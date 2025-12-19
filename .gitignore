@@ -4,6 +4,10 @@
 /dist/
 /bundle-*/
 
+# .NET build outputs
+/src/BbsClient/bin/
+/src/BbsClient/obj/
+
 # Flexible-IPFS runtime data (node identity, datastore, logs)
 /flexible-ipfs-base/.ipfs/
 /flexible-ipfs-base/getdata/
@@ -19,4 +23,3 @@
 Thumbs.db
 .idea/
 .vscode/
-

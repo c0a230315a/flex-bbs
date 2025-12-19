@@ -1,19 +1,20 @@
 # flex-bbs
 
-Experimental decentralized BBS on top of **Flexible‑IPFS** + **Go** + (future) **C# client**.
+Experimental decentralized BBS on top of **Flexible‑IPFS** + **Go** + **C# client**.
 
 This repo currently contains:
 
 - `flexible-ipfs-base/` – prebuilt Flexible‑IPFS jars + run scripts.
 - `flexible-ipfs-runtime/` – bundled Java 17 runtimes per OS (`linux-x64`, `win-x64`, `osx-x64`).
-- `backend-go/` – Go backend node `bbs-node` (currently a minimal health-check stub).
-- `src/BbsClient/` – placeholder for the future C# UI.
+- `backend-go/` – Go backend node `bbs-node` (HTTP API under `/api/v1`).
+- `src/BbsClient/` – C# CLI client (`dotnet run --project src/BbsClient`).
 
 ## Prebuilt bundle (one download)
 
 GitHub Actions builds OS‑specific bundles that include everything needed:
 
 - `bbs-node` binary
+- `bbs-client` binary
 - `flexible-ipfs-base/` (jars + scripts)
 - `flexible-ipfs-runtime/<os>/jre` (bundled Java 17 for that OS)
 
@@ -38,12 +39,33 @@ GitHub Actions builds OS‑specific bundles that include everything needed:
    curl http://127.0.0.1:8080/healthz
    ```
 
+### Initialize a board (first time)
+
+Generate a key pair:
+
+```bash
+./bbs-node-linux-amd64 gen-key
+```
+
+Then create/register a board (writes `boards.json` under your OS config dir by default):
+
+```bash
+./bbs-node-linux-amd64 init-board --board-id bbs.general --title General --author-priv-key 'ed25519:...'
+```
+
+### Use the CLI client
+
+```bash
+./bbs-client boards
+./bbs-client threads bbs.general
+```
+
 ## Build from source (WSL / Ubuntu)
 
 ### Prerequisites
 
 - Go 1.22+
-- (Optional) .NET 8 SDK for the future C# client
+- (Optional) .NET 8 SDK for the C# client
 - No Java install required – the bundled runtime is used.
 
 Install Go on WSL (example):
@@ -72,6 +94,12 @@ go build ./cmd/bbs-node
 
 The binary is created at `backend-go/bbs-node`.
 
+Build the C# client:
+
+```bash
+dotnet build src/BbsClient/BbsClient.csproj -c Release
+```
+
 ### Run
 
 If you run from the repo root, `bbs-node` will also autostart Flexible‑IPFS (same as the bundle).
@@ -84,4 +112,4 @@ Start the local build:
 ## Notes
 
 - On first run, `flexible-ipfs-base/run.sh` and `run.bat` auto‑create `providers/`, `getdata/`, and `attr`.
-- The Go backend currently only exposes `/healthz`; BBS APIs are still TODO.
+- The Go backend exposes the BBS HTTP API under `/api/v1` (see `docs/flexible_ipfs_bbs_仕様書.md` for semantics).
