@@ -7,6 +7,15 @@ import (
 	"testing"
 )
 
+// page_test.go は Issue #16 の
+// GET /api/v1/boards/{boardId}/threads のページング挙動を固定するためのテスト。
+//
+// ここで確認していること:
+// - デフォルト値: page=1, limit=10
+// - page/limit 指定での切り出し範囲
+// - 端数ページ(最後のページ)の件数
+// - パス不正は 404、メソッド不正は 405
+
 func TestBoardThreads_DefaultPaging(t *testing.T) {
 	resetBoardThreads()
 	defer resetBoardThreads()
@@ -131,7 +140,8 @@ func TestBoardThreads_MethodNotAllowed(t *testing.T) {
 }
 
 func itoa(i int) string {
-	// small local helper to avoid fmt import in tests
+	// itoa はテストデータ生成用の最小ユーティリティ。
+	// fmt を import せずに "t1".."t25" のようなIDを作るために使う。
 	if i == 0 {
 		return "0"
 	}
