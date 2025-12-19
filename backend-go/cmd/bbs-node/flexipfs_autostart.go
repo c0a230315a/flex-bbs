@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -19,7 +21,7 @@ type flexIPFSProc struct {
 	stdinWriter io.Closer
 }
 
-func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride string) (*flexIPFSProc, error) {
+func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride, gwEndpointOverride string) (*flexIPFSProc, error) {
 	if !isLocalBaseURL(baseURL) {
 		log.Printf("flex-ipfs autostart skipped (non-local base url): %s", baseURL)
 		return nil, nil
@@ -42,7 +44,7 @@ func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride string) (*
 		return nil, err
 	}
 
-	proc, err := startFlexIPFS(javaBin, flexBaseDir)
+	proc, err := startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +131,7 @@ func findJavaBin(runtimeDir string) (string, error) {
 	return exec.LookPath("java")
 }
 
-func startFlexIPFS(javaBin, flexBaseDir string) (*flexIPFSProc, error) {
+func startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride string) (*flexIPFSProc, error) {
 	if err := os.MkdirAll(filepath.Join(flexBaseDir, "providers"), 0o755); err != nil {
 		return nil, err
 	}
@@ -139,6 +141,10 @@ func startFlexIPFS(javaBin, flexBaseDir string) (*flexIPFSProc, error) {
 	attrPath := filepath.Join(flexBaseDir, "attr")
 	if _, err := os.Stat(attrPath); os.IsNotExist(err) {
 		_ = os.WriteFile(attrPath, []byte{}, 0o644)
+	}
+
+	if err := maybeOverrideKadrttGWEndpoint(flexBaseDir, gwEndpointOverride); err != nil {
+		return nil, err
 	}
 
 	// Keep stdin open to avoid APIServer exiting on EOF.
@@ -170,6 +176,87 @@ func startFlexIPFS(javaBin, flexBaseDir string) (*flexIPFSProc, error) {
 	}()
 
 	return &flexIPFSProc{cmd: cmd, stdinWriter: stdinW}, nil
+}
+
+func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return nil
+	}
+	if strings.ContainsAny(endpoint, "\r\n") {
+		return fmt.Errorf("FLEXIPFS_GW_ENDPOINT must be a single line")
+	}
+
+	propsPath := filepath.Join(flexBaseDir, "kadrtt.properties")
+	b, err := os.ReadFile(propsPath)
+	if err != nil {
+		return err
+	}
+	original := string(b)
+
+	lineSep := "\n"
+	if strings.Contains(original, "\r\n") {
+		lineSep = "\r\n"
+	}
+
+	re := regexp.MustCompile(`^(\s*)ipfs\.endpoint(\s*[:=]).*$`)
+	parts := strings.SplitAfter(original, lineSep)
+
+	var out strings.Builder
+	out.Grow(len(original) + len(endpoint) + 32)
+
+	replaced := false
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		suffix := ""
+		line := part
+		if strings.HasSuffix(part, lineSep) {
+			suffix = lineSep
+			line = strings.TrimSuffix(part, lineSep)
+		}
+
+		trimLeft := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimLeft, "#") || strings.HasPrefix(trimLeft, "!") {
+			out.WriteString(line)
+			out.WriteString(suffix)
+			continue
+		}
+
+		if m := re.FindStringSubmatch(line); m != nil {
+			out.WriteString(m[1])
+			out.WriteString("ipfs.endpoint")
+			out.WriteString(m[2])
+			out.WriteString(endpoint)
+			out.WriteString(suffix)
+			replaced = true
+			continue
+		}
+
+		out.WriteString(line)
+		out.WriteString(suffix)
+	}
+
+	if !replaced {
+		if !strings.HasSuffix(out.String(), lineSep) && out.Len() > 0 {
+			out.WriteString(lineSep)
+		}
+		out.WriteString("ipfs.endpoint=")
+		out.WriteString(endpoint)
+		out.WriteString(lineSep)
+	}
+
+	st, statErr := os.Stat(propsPath)
+	mode := os.FileMode(0o644)
+	if statErr == nil {
+		mode = st.Mode().Perm()
+	}
+	if err := os.WriteFile(propsPath, []byte(out.String()), mode); err != nil {
+		return err
+	}
+	log.Printf("flex-ipfs: set ipfs.endpoint=%s (%s)", endpoint, propsPath)
+	return nil
 }
 
 func waitForFlexIPFS(ctx context.Context, baseURL string, timeout time.Duration) {

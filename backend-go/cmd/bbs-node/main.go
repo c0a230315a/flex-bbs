@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -24,17 +25,18 @@ import (
 )
 
 var (
-	role              = flag.String("role", "client", "node role: client | indexer | archiver | full")
-	flexIPFSBase      = flag.String("flexipfs-base-url", "http://127.0.0.1:5001/api/v0", "Flexible-IPFS HTTP API base URL")
-	flexIPFSBaseDir   = flag.String("flexipfs-base-dir", "", "path to flexible-ipfs-base (auto-detected if empty)")
-	autoStartFlexIPFS = flag.Bool("autostart-flexipfs", true, "auto start local Flexible-IPFS if not running")
-	httpAddr          = flag.String("http", "127.0.0.1:8080", "HTTP listen address")
-	dataDir           = flag.String("data-dir", "", "data directory for boards.json and index db (defaults to OS config dir)")
-	boardsFile        = flag.String("boards-file", "", "path to boards.json (defaults to <data-dir>/boards.json)")
-	indexDBPath       = flag.String("index-db", "", "path to index sqlite db (defaults to <data-dir>/index.db)")
-	indexSyncInterval = flag.Duration("index-sync-interval", 15*time.Second, "index sync interval (indexer/full)")
-	archiveDir        = flag.String("archive-dir", "", "archive directory (archiver/full)")
-	archiveInterval   = flag.Duration("archive-interval", 60*time.Second, "archive sync interval (archiver/full)")
+	role               = flag.String("role", "client", "node role: client | indexer | archiver | full")
+	flexIPFSBase       = flag.String("flexipfs-base-url", "http://127.0.0.1:5001/api/v0", "Flexible-IPFS HTTP API base URL")
+	flexIPFSBaseDir    = flag.String("flexipfs-base-dir", "", "path to flexible-ipfs-base (auto-detected if empty)")
+	flexIPFSGWEndpoint = flag.String("flexipfs-gw-endpoint", "", "override ipfs.endpoint in flexible-ipfs-base/kadrtt.properties when autostarting (also via env FLEXIPFS_GW_ENDPOINT)")
+	autoStartFlexIPFS  = flag.Bool("autostart-flexipfs", true, "auto start local Flexible-IPFS if not running")
+	httpAddr           = flag.String("http", "127.0.0.1:8080", "HTTP listen address")
+	dataDir            = flag.String("data-dir", "", "data directory for boards.json and index db (defaults to OS config dir)")
+	boardsFile         = flag.String("boards-file", "", "path to boards.json (defaults to <data-dir>/boards.json)")
+	indexDBPath        = flag.String("index-db", "", "path to index sqlite db (defaults to <data-dir>/index.db)")
+	indexSyncInterval  = flag.Duration("index-sync-interval", 15*time.Second, "index sync interval (indexer/full)")
+	archiveDir         = flag.String("archive-dir", "", "archive directory (archiver/full)")
+	archiveInterval    = flag.Duration("archive-interval", 60*time.Second, "archive sync interval (archiver/full)")
 )
 
 func main() {
@@ -59,7 +61,7 @@ func main() {
 
 	var flexProc *flexIPFSProc
 	if *autoStartFlexIPFS {
-		p, err := maybeStartFlexIPFS(ctx, *flexIPFSBase, *flexIPFSBaseDir)
+		p, err := maybeStartFlexIPFS(ctx, *flexIPFSBase, *flexIPFSBaseDir, resolveFlexIPFSGWEndpoint(*flexIPFSGWEndpoint))
 		if err != nil {
 			log.Printf("flex-ipfs autostart failed: %v", err)
 		} else {
@@ -145,6 +147,16 @@ func main() {
 	if flexProc != nil {
 		flexProc.stop()
 	}
+}
+
+func resolveFlexIPFSGWEndpoint(flagValue string) string {
+	if v := strings.TrimSpace(flagValue); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("FLEXIPFS_GW_ENDPOINT")); v != "" {
+		return v
+	}
+	return ""
 }
 
 func defaultDataDir() string {

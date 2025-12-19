@@ -139,4 +139,5 @@ dotnet run --project src/BbsClient -- boards
 ## Notes
 
 - On first run, `flexible-ipfs-base/run.sh` and `run.bat` auto‑create `providers/`, `getdata/`, and `attr`.
+- To avoid editing `flexible-ipfs-base/kadrtt.properties` for every environment, override `ipfs.endpoint` via `FLEXIPFS_GW_ENDPOINT` (or `bbs-node --flexipfs-gw-endpoint ...`) when starting Flexible‑IPFS.
 - The Go backend exposes the BBS HTTP API under `/api/v1` (see `docs/flexible_ipfs_bbs_仕様書.md` for semantics).
