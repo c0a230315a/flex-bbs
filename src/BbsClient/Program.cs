@@ -5,31 +5,94 @@ using BbsClient.Util;
 
 var ct = CancellationToken.None;
 
-if (args.Length == 0 || args[0] is "-h" or "--help")
+if (args.Any(a => a is "-h" or "--help"))
 {
     PrintHelp();
     return 0;
 }
 
-var backend = GetOption(args, "--backend") ?? "http://127.0.0.1:8080";
-var dataDir = GetOption(args, "--data-dir") ?? ConfigPaths.DefaultAppDir();
-var startBackend = HasFlag(args, "--start-backend");
-var bbsNodePath = GetOption(args, "--bbs-node-path") ?? DefaultBbsNodePath();
+var configStore = new ClientConfigStore(ClientConfigStore.DefaultPath());
+ClientConfig persistedConfig;
+try
+{
+    persistedConfig = await configStore.LoadAsync(ct);
+}
+catch (Exception ex)
+{
+    Console.Error.WriteLine($"config load error: {ex.Message}");
+    persistedConfig = new ClientConfig().Normalize();
+}
+
+var backend = GetOption(args, "--backend") ?? persistedConfig.BackendBaseUrl;
+var dataDir = GetOption(args, "--data-dir") ?? persistedConfig.DataDir;
+var startBackend = GetBoolOption(args, "--start-backend")
+                   ?? (HasFlag(args, "--no-start-backend") ? false : persistedConfig.StartBackend);
+var bbsNodePath = GetOption(args, "--bbs-node-path") ?? persistedConfig.BbsNodePath;
+
+var flexIpfsBaseUrl = GetOption(args, "--flexipfs-base-url") ?? persistedConfig.FlexIpfsBaseUrl;
+var flexIpfsBaseDir = GetOption(args, "--flexipfs-base-dir") ?? persistedConfig.FlexIpfsBaseDir;
+var flexIpfsGwEndpoint = GetOption(args, "--flexipfs-gw-endpoint") ?? persistedConfig.FlexIpfsGwEndpoint;
+var autostartFlexIpfs = GetBoolOption(args, "--autostart-flexipfs")
+                        ?? (HasFlag(args, "--no-autostart-flexipfs") ? false : persistedConfig.AutostartFlexIpfs);
+
+var effectiveConfig = persistedConfig with
+{
+    BackendBaseUrl = backend,
+    DataDir = dataDir,
+    StartBackend = startBackend,
+    BbsNodePath = bbsNodePath,
+    FlexIpfsBaseUrl = flexIpfsBaseUrl,
+    FlexIpfsBaseDir = flexIpfsBaseDir,
+    FlexIpfsGwEndpoint = flexIpfsGwEndpoint,
+    AutostartFlexIpfs = autostartFlexIpfs,
+};
+effectiveConfig = effectiveConfig.Normalize();
+backend = effectiveConfig.BackendBaseUrl;
+dataDir = effectiveConfig.DataDir;
+startBackend = effectiveConfig.StartBackend;
+bbsNodePath = effectiveConfig.BbsNodePath;
+
+using var launcher = new BackendLauncher();
+var cmdIndex = FindCommandIndex(args);
+var command = cmdIndex < 0 ? "ui" : args[cmdIndex];
+var rest = cmdIndex < 0 ? [] : args.Skip(cmdIndex + 1).ToArray();
+
+if (command == "ui")
+{
+    return await InteractiveUi.RunAsync(configStore, effectiveConfig, launcher, ct);
+}
 
 var keysPath = Path.Combine(dataDir, "keys.json");
 var blockedPath = Path.Combine(dataDir, "blockedPubKeys.json");
-
 var keyStore = new KeyStore(keysPath);
 var blockedStore = new BlockedStore(blockedPath);
 
-using var launcher = new BackendLauncher();
+if (command == "keys")
+{
+    return await HandleKeys(keyStore, rest, ct);
+}
+if (command == "blocked")
+{
+    return await HandleBlocked(blockedStore, rest, ct);
+}
+
+var needsBackend = command is "boards" or "threads" or "thread"
+    or "create-thread" or "add-post" or "edit-post" or "tombstone-post";
+
+if (!needsBackend)
+{
+    Console.Error.WriteLine($"Unknown command: {command}");
+    PrintHelp();
+    return 2;
+}
+
 try
 {
-    var bbsNodeArgs = BuildBbsNodeArgs(backend, dataDir);
+    var bbsNodeArgs = BbsNodeArgsBuilder.Build(effectiveConfig);
     await launcher.EnsureRunningAsync(
         backend,
         startBackend,
-        bbsNodePath,
+        bbsNodePath ?? BbsNodePathResolver.Resolve(),
         bbsNodeArgs,
         ct
     );
@@ -43,25 +106,10 @@ catch (Exception ex)
 using var http = new HttpClient();
 var api = new BbsApiClient(http, backend);
 
-var cmdIndex = FindCommandIndex(args);
-if (cmdIndex < 0)
-{
-    PrintHelp();
-    return 2;
-}
-var command = args[cmdIndex];
-var rest = args.Skip(cmdIndex + 1).ToArray();
-
 try
 {
     switch (command)
     {
-        case "keys":
-            return await HandleKeys(keyStore, rest, ct);
-
-        case "blocked":
-            return await HandleBlocked(blockedStore, rest, ct);
-
         case "boards":
             return await HandleBoards(api, rest, ct);
 
@@ -82,9 +130,6 @@ try
 
         case "tombstone-post":
             return await HandleTombstonePost(api, keyStore, rest, ct);
-
-        case "ui":
-            return await InteractiveUi.RunAsync(api, keyStore, blockedStore, backend, dataDir, ct);
 
         default:
             Console.Error.WriteLine($"Unknown command: {command}");
@@ -401,6 +446,35 @@ static bool HasFlag(string[] args, string name)
     return args.Any(a => string.Equals(a, name, StringComparison.Ordinal));
 }
 
+static bool? GetBoolOption(string[] args, string name)
+{
+    for (var i = 0; i < args.Length; i++)
+    {
+        var a = args[i];
+        if (a == name)
+        {
+            return true;
+        }
+        if (a.StartsWith(name + "=", StringComparison.Ordinal))
+        {
+            var v = a[(name.Length + 1)..].Trim();
+            if (bool.TryParse(v, out var b))
+            {
+                return b;
+            }
+            if (string.Equals(v, "1", StringComparison.Ordinal))
+            {
+                return true;
+            }
+            if (string.Equals(v, "0", StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+    }
+    return null;
+}
+
 static int FindCommandIndex(string[] args)
 {
     for (var i = 0; i < args.Length; i++)
@@ -428,34 +502,8 @@ static int FindCommandIndex(string[] args)
 
 static bool OptionTakesValue(string name)
 {
-    return name is "--backend" or "--data-dir" or "--bbs-node-path";
-}
-
-static string? DefaultBbsNodePath()
-{
-    try
-    {
-        var rid = System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier;
-        var exe = OperatingSystem.IsWindows() ? "bbs-node.exe" : "bbs-node";
-        var candidate = Path.Combine(AppContext.BaseDirectory, "runtimes", rid, "bbs-node", exe);
-        return File.Exists(candidate) ? candidate : null;
-    }
-    catch
-    {
-        return null;
-    }
-}
-
-static string[] BuildBbsNodeArgs(string backendBaseUrl, string dataDir)
-{
-    var uri = new Uri(backendBaseUrl);
-    var hostPort = $"{uri.Host}:{uri.Port}";
-    return
-    [
-        "--role=client",
-        "--http", hostPort,
-        "--data-dir", dataDir,
-    ];
+    return name is "--backend" or "--data-dir" or "--bbs-node-path"
+        or "--flexipfs-base-url" or "--flexipfs-base-dir" or "--flexipfs-gw-endpoint";
 }
 
 static void PrintHelp()
@@ -465,11 +513,17 @@ static void PrintHelp()
     Console.WriteLine("Global options:");
     Console.WriteLine("  --backend <url>      (default: http://127.0.0.1:8080)");
     Console.WriteLine("  --data-dir <path>    (default: OS app data dir)");
-    Console.WriteLine("  --start-backend      (start bbs-node if not running)");
+    Console.WriteLine("  --start-backend      (default: true; start bbs-node if not running)");
+    Console.WriteLine("  --no-start-backend   (disable auto-start)");
     Console.WriteLine("  --bbs-node-path <p>  (path to bbs-node)");
+    Console.WriteLine("  --flexipfs-base-url <url>     (default: http://127.0.0.1:5001/api/v0)");
+    Console.WriteLine("  --flexipfs-base-dir <path>    (default: auto-detect)");
+    Console.WriteLine("  --flexipfs-gw-endpoint <val>  (override ipfs.endpoint on autostart)");
+    Console.WriteLine("  --autostart-flexipfs=<bool>   (default: true)");
+    Console.WriteLine("  --no-autostart-flexipfs       (disable flex-ipfs autostart)");
     Console.WriteLine();
     Console.WriteLine("Commands:");
-    Console.WriteLine("  ui  (interactive TUI)");
+    Console.WriteLine("  ui  (interactive TUI, default)");
     Console.WriteLine("  keys list|generate --name <name>|delete --name <name>");
     Console.WriteLine("  blocked list|add --pub <pubKey>|remove --pub <pubKey>");
     Console.WriteLine("  boards");

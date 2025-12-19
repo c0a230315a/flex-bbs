@@ -1,5 +1,6 @@
 using BbsClient.Api;
 using BbsClient.Storage;
+using BbsClient.Util;
 using Spectre.Console;
 
 namespace BbsClient.Ui;
@@ -9,11 +10,9 @@ public static class InteractiveUi
     private const int DefaultPageSize = 50;
 
     public static async Task<int> RunAsync(
-        BbsApiClient api,
-        KeyStore keys,
-        BlockedStore blocked,
-        string backendBaseUrl,
-        string dataDir,
+        ClientConfigStore configStore,
+        ClientConfig initialConfig,
+        BackendLauncher launcher,
         CancellationToken ct
     )
     {
@@ -23,18 +22,42 @@ public static class InteractiveUi
             return 2;
         }
 
+        var cfg = initialConfig.Normalize();
+
+        using var http = new HttpClient();
+        var api = new BbsApiClient(http, cfg.BackendBaseUrl);
+        var keys = new KeyStore(Path.Combine(cfg.DataDir, "keys.json"));
+        var blocked = new BlockedStore(Path.Combine(cfg.DataDir, "blockedPubKeys.json"));
+
+        string? backendStartError = null;
+        try
+        {
+            var bbsNodePath = cfg.BbsNodePath ?? BbsNodePathResolver.Resolve();
+            await launcher.EnsureRunningAsync(cfg.BackendBaseUrl, cfg.StartBackend, bbsNodePath, BbsNodeArgsBuilder.Build(cfg), ct);
+        }
+        catch (Exception ex)
+        {
+            backendStartError = ex.Message;
+        }
+
         while (true)
         {
+            var healthy = await BackendLauncher.IsHealthyAsync(cfg.BackendBaseUrl, ct);
+
             AnsiConsole.Clear();
             AnsiConsole.Write(new Rule("[bold]Flex BBS Client[/]").LeftJustified());
-            AnsiConsole.MarkupLine($"[grey]Backend:[/] {Markup.Escape(backendBaseUrl)}");
-            AnsiConsole.MarkupLine($"[grey]Data dir:[/] {Markup.Escape(dataDir)}");
+            AnsiConsole.MarkupLine($"[grey]Backend:[/] {Markup.Escape(cfg.BackendBaseUrl)} [{(healthy ? "green" : "red")}]{(healthy ? "up" : "down")}[/]");
+            AnsiConsole.MarkupLine($"[grey]Data dir:[/] {Markup.Escape(cfg.DataDir)}");
+            if (!string.IsNullOrWhiteSpace(backendStartError) && !healthy)
+            {
+                AnsiConsole.MarkupLine($"[red]Backend:[/] {Markup.Escape(backendStartError)}");
+            }
             AnsiConsole.WriteLine();
 
             var choice = AnsiConsole.Prompt(
                 new SelectionPrompt<string>()
                     .Title("Main menu")
-                    .AddChoices("Browse boards", "Search posts", "Keys", "Blocked", "Quit")
+                    .AddChoices("Browse boards", "Search posts", "Keys", "Blocked", "Settings", "Quit")
             );
 
             try
@@ -53,6 +76,19 @@ public static class InteractiveUi
                     case "Blocked":
                         await BlockedMenuAsync(blocked, ct);
                         break;
+                    case "Settings":
+                    {
+                        var updated = await SettingsMenuAsync(configStore, cfg, launcher, ct);
+                        if (updated != cfg)
+                        {
+                            cfg = updated.Normalize();
+                            api = new BbsApiClient(http, cfg.BackendBaseUrl);
+                            keys = new KeyStore(Path.Combine(cfg.DataDir, "keys.json"));
+                            blocked = new BlockedStore(Path.Combine(cfg.DataDir, "blockedPubKeys.json"));
+                        }
+                        backendStartError = null;
+                        break;
+                    }
                     case "Quit":
                         return 0;
                 }
@@ -890,6 +926,646 @@ public static class InteractiveUi
                 .AddChoices(list)
                 .UseConverter(k => $"{Markup.Escape(k.Name)}  [grey]{Markup.Escape(Short(k.Pub, 32))}[/]")
         );
+    }
+
+    private static async Task<ClientConfig> SettingsMenuAsync(
+        ClientConfigStore configStore,
+        ClientConfig cfg,
+        BackendLauncher launcher,
+        CancellationToken ct
+    )
+    {
+        cfg = cfg.Normalize();
+
+        while (true)
+        {
+            var healthy = await BackendLauncher.IsHealthyAsync(cfg.BackendBaseUrl, ct);
+
+            AnsiConsole.Clear();
+            AnsiConsole.Write(new Rule("[bold]Settings[/]").LeftJustified());
+            AnsiConsole.MarkupLine($"[grey]Config:[/] {Markup.Escape(configStore.ConfigPath)}");
+            AnsiConsole.MarkupLine($"[grey]Backend:[/] {Markup.Escape(cfg.BackendBaseUrl)} [{(healthy ? "green" : "red")}]{(healthy ? "up" : "down")}[/]");
+            AnsiConsole.MarkupLine($"[grey]Auto-start backend:[/] {cfg.StartBackend}");
+            AnsiConsole.MarkupLine($"[grey]bbs-node path:[/] {Markup.Escape(cfg.BbsNodePath ?? "<auto>")}");
+            AnsiConsole.MarkupLine($"[grey]Data dir:[/] {Markup.Escape(cfg.DataDir)}");
+            AnsiConsole.MarkupLine($"[grey]Flex-IPFS base URL:[/] {Markup.Escape(cfg.FlexIpfsBaseUrl)}");
+            AnsiConsole.MarkupLine($"[grey]Flex-IPFS base dir:[/] {Markup.Escape(cfg.FlexIpfsBaseDir ?? "<auto>")}");
+            AnsiConsole.MarkupLine($"[grey]Flex-IPFS GW endpoint override:[/] {Markup.Escape(cfg.FlexIpfsGwEndpoint ?? "<none>")}");
+            AnsiConsole.MarkupLine($"[grey]Autostart flex-ipfs:[/] {cfg.AutostartFlexIpfs}");
+            AnsiConsole.WriteLine();
+
+            var choice = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("Settings menu")
+                    .AddChoices("Client / Backend", "Flexible-IPFS", "kadrtt.properties", "Backend control", "Back")
+            );
+
+            switch (choice)
+            {
+                case "Client / Backend":
+                {
+                    var updated = PromptClientBackendSettings(cfg);
+                    cfg = await ApplyConfigAsync(configStore, launcher, cfg, updated, ct);
+                    break;
+                }
+                case "Flexible-IPFS":
+                {
+                    var updated = PromptFlexIpfsSettings(cfg);
+                    cfg = await ApplyConfigAsync(configStore, launcher, cfg, updated, ct);
+                    break;
+                }
+                case "kadrtt.properties":
+                {
+                    var changed = await KadrttPropertiesMenuAsync(cfg, launcher, ct);
+                    if (changed)
+                    {
+                        await RestartBackendForFlexIpfsAsync(cfg, launcher, ct);
+                        Pause();
+                    }
+                    break;
+                }
+                case "Backend control":
+                    await BackendControlMenuAsync(cfg, launcher, ct);
+                    break;
+                case "Back":
+                    return cfg;
+            }
+        }
+    }
+
+    private static ClientConfig PromptClientBackendSettings(ClientConfig cfg)
+    {
+        var backend = AnsiConsole.Ask("Backend base URL", cfg.BackendBaseUrl);
+        var dataDir = AnsiConsole.Ask("Data dir", cfg.DataDir);
+        var startBackend = AnsiConsole.Confirm("Auto-start backend (manage local bbs-node)?", cfg.StartBackend);
+
+        var currentPath = cfg.BbsNodePath ?? "<auto>";
+        var bbsNodePathInput = AnsiConsole.Prompt(
+            new TextPrompt<string>($"bbs-node path (blank = auto) [grey](current: {EscapePrompt(currentPath)})[/]")
+                .AllowEmpty()
+        );
+        var bbsNodePath = string.IsNullOrWhiteSpace(bbsNodePathInput) ? null : bbsNodePathInput.Trim();
+
+        return cfg with
+        {
+            BackendBaseUrl = backend,
+            DataDir = dataDir,
+            StartBackend = startBackend,
+            BbsNodePath = bbsNodePath,
+        };
+    }
+
+    private static ClientConfig PromptFlexIpfsSettings(ClientConfig cfg)
+    {
+        var flexBaseUrl = AnsiConsole.Ask("Flexible-IPFS HTTP API base URL", cfg.FlexIpfsBaseUrl);
+        var autostartFlexIpfs = AnsiConsole.Confirm("Autostart Flexible-IPFS (when managed by bbs-node)?", cfg.AutostartFlexIpfs);
+
+        var currentBaseDir = cfg.FlexIpfsBaseDir ?? "<auto>";
+        var baseDirInput = AnsiConsole.Prompt(
+            new TextPrompt<string>($"flexible-ipfs-base dir (blank = auto) [grey](current: {EscapePrompt(currentBaseDir)})[/]")
+                .AllowEmpty()
+        );
+        var baseDir = string.IsNullOrWhiteSpace(baseDirInput) ? null : baseDirInput.Trim();
+
+        var currentGw = cfg.FlexIpfsGwEndpoint ?? "<none>";
+        var gwInput = AnsiConsole.Prompt(
+            new TextPrompt<string>($"ipfs.endpoint override (blank = none) [grey](current: {EscapePrompt(currentGw)})[/]")
+                .AllowEmpty()
+        );
+        var gw = string.IsNullOrWhiteSpace(gwInput) ? null : gwInput.Trim();
+
+        return cfg with
+        {
+            FlexIpfsBaseUrl = flexBaseUrl,
+            AutostartFlexIpfs = autostartFlexIpfs,
+            FlexIpfsBaseDir = baseDir,
+            FlexIpfsGwEndpoint = gw,
+        };
+    }
+
+    private static async Task<ClientConfig> ApplyConfigAsync(
+        ClientConfigStore configStore,
+        BackendLauncher launcher,
+        ClientConfig oldCfg,
+        ClientConfig newCfg,
+        CancellationToken ct
+    )
+    {
+        oldCfg = oldCfg.Normalize();
+        newCfg = newCfg.Normalize();
+
+        if (!TryValidateHttpUrl(newCfg.BackendBaseUrl, out var backendErr))
+        {
+            AnsiConsole.MarkupLine($"[red]Invalid backend URL:[/] {Markup.Escape(backendErr)}");
+            Pause();
+            return oldCfg;
+        }
+        if (!TryValidateHttpUrl(newCfg.FlexIpfsBaseUrl, out var flexErr))
+        {
+            AnsiConsole.MarkupLine($"[red]Invalid Flexible-IPFS base URL:[/] {Markup.Escape(flexErr)}");
+            Pause();
+            return oldCfg;
+        }
+        if (string.IsNullOrWhiteSpace(newCfg.DataDir))
+        {
+            AnsiConsole.MarkupLine("[red]Data dir is required.[/]");
+            Pause();
+            return oldCfg;
+        }
+
+        if (newCfg == oldCfg)
+        {
+            return oldCfg;
+        }
+
+        try
+        {
+            await configStore.SaveAsync(newCfg, ct);
+            AnsiConsole.MarkupLine("[green]ok[/] saved");
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex);
+            Pause();
+            return oldCfg;
+        }
+
+        if (!newCfg.StartBackend && oldCfg.StartBackend && launcher.IsManagingProcess)
+        {
+            launcher.StopManaged();
+        }
+
+        var restartNeeded =
+            !string.Equals(oldCfg.BackendBaseUrl, newCfg.BackendBaseUrl, StringComparison.Ordinal) ||
+            !string.Equals(oldCfg.DataDir, newCfg.DataDir, StringComparison.Ordinal) ||
+            !string.Equals(oldCfg.FlexIpfsBaseUrl, newCfg.FlexIpfsBaseUrl, StringComparison.Ordinal) ||
+            !string.Equals(oldCfg.FlexIpfsBaseDir, newCfg.FlexIpfsBaseDir, StringComparison.Ordinal) ||
+            !string.Equals(oldCfg.FlexIpfsGwEndpoint, newCfg.FlexIpfsGwEndpoint, StringComparison.Ordinal) ||
+            oldCfg.AutostartFlexIpfs != newCfg.AutostartFlexIpfs;
+
+        if (restartNeeded)
+        {
+            await RestartBackendForFlexIpfsAsync(newCfg, launcher, ct);
+        }
+        else if (newCfg.StartBackend && !await BackendLauncher.IsHealthyAsync(newCfg.BackendBaseUrl, ct))
+        {
+            try
+            {
+                var bbsNodePath = newCfg.BbsNodePath ?? BbsNodePathResolver.Resolve();
+                await launcher.EnsureRunningAsync(newCfg.BackendBaseUrl, newCfg.StartBackend, bbsNodePath, BbsNodeArgsBuilder.Build(newCfg), ct);
+                AnsiConsole.MarkupLine("[green]ok[/] started");
+            }
+            catch (Exception ex)
+            {
+                ShowError(ex);
+            }
+        }
+
+        Pause();
+        return newCfg;
+    }
+
+    private static async Task BackendControlMenuAsync(ClientConfig cfg, BackendLauncher launcher, CancellationToken ct)
+    {
+        while (true)
+        {
+            var healthy = await BackendLauncher.IsHealthyAsync(cfg.BackendBaseUrl, ct);
+            var managed = launcher.IsManagingProcess;
+
+            AnsiConsole.Clear();
+            AnsiConsole.Write(new Rule("[bold]Backend control[/]").LeftJustified());
+            AnsiConsole.MarkupLine($"[grey]Backend:[/] {Markup.Escape(cfg.BackendBaseUrl)} [{(healthy ? "green" : "red")}]{(healthy ? "up" : "down")}[/]");
+            AnsiConsole.MarkupLine($"[grey]Managed by this client:[/] {managed} {(launcher.ManagedPid is int pid ? $"(pid={pid})" : "")}".TrimEnd());
+            AnsiConsole.MarkupLine($"[grey]Auto-start backend:[/] {cfg.StartBackend}");
+            AnsiConsole.WriteLine();
+
+            var actions = new List<string>();
+            if (!healthy)
+            {
+                actions.Add("Start");
+            }
+            if (managed)
+            {
+                actions.Add("Restart");
+                actions.Add("Stop");
+            }
+            actions.Add("Back");
+
+            var action = AnsiConsole.Prompt(new SelectionPrompt<string>().Title("Action").AddChoices(actions));
+            switch (action)
+            {
+                case "Start":
+                    try
+                    {
+                        var bbsNodePath = cfg.BbsNodePath ?? BbsNodePathResolver.Resolve();
+                        await launcher.EnsureRunningAsync(cfg.BackendBaseUrl, cfg.StartBackend, bbsNodePath, BbsNodeArgsBuilder.Build(cfg), ct);
+                        AnsiConsole.MarkupLine("[green]ok[/]");
+                    }
+                    catch (Exception ex)
+                    {
+                        ShowError(ex);
+                    }
+                    Pause();
+                    break;
+                case "Restart":
+                    await RestartBackendForFlexIpfsAsync(cfg, launcher, ct);
+                    Pause();
+                    break;
+                case "Stop":
+                    launcher.StopManaged();
+                    AnsiConsole.MarkupLine("[green]ok[/]");
+                    Pause();
+                    break;
+                case "Back":
+                    return;
+            }
+        }
+    }
+
+    private static async Task RestartBackendForFlexIpfsAsync(ClientConfig cfg, BackendLauncher launcher, CancellationToken ct)
+    {
+        cfg = cfg.Normalize();
+
+        if (!cfg.StartBackend)
+        {
+            AnsiConsole.MarkupLine("[yellow]Auto-start is disabled; restart skipped.[/]");
+            return;
+        }
+
+        var bbsNodePath = cfg.BbsNodePath ?? BbsNodePathResolver.Resolve();
+        var bbsNodeArgs = BbsNodeArgsBuilder.Build(cfg);
+
+        try
+        {
+            var restarted = await launcher.RestartManagedAsync(cfg.BackendBaseUrl, cfg.StartBackend, bbsNodePath, bbsNodeArgs, ct);
+            if (restarted)
+            {
+                AnsiConsole.MarkupLine("[green]ok[/] restarted");
+                return;
+            }
+
+            if (!await BackendLauncher.IsHealthyAsync(cfg.BackendBaseUrl, ct))
+            {
+                await launcher.EnsureRunningAsync(cfg.BackendBaseUrl, cfg.StartBackend, bbsNodePath, bbsNodeArgs, ct);
+                AnsiConsole.MarkupLine("[green]ok[/] started");
+                return;
+            }
+
+            AnsiConsole.MarkupLine("[yellow]Backend is running but not managed by this client; please restart it manually to apply settings.[/]");
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex);
+        }
+    }
+
+    private static async Task<bool> KadrttPropertiesMenuAsync(ClientConfig cfg, BackendLauncher launcher, CancellationToken ct)
+    {
+        _ = launcher;
+
+        var baseDir = ResolveFlexIpfsBaseDir(cfg);
+        if (string.IsNullOrWhiteSpace(baseDir))
+        {
+            AnsiConsole.MarkupLine("[red]flexible-ipfs-base dir not found. Set it in Flexible-IPFS settings.[/]");
+            Pause();
+            return false;
+        }
+
+        var propsPath = Path.Combine(baseDir, "kadrtt.properties");
+        if (!File.Exists(propsPath))
+        {
+            AnsiConsole.MarkupLine($"[red]kadrtt.properties not found:[/] {Markup.Escape(propsPath)}");
+            Pause();
+            return false;
+        }
+
+        var changed = false;
+
+        while (true)
+        {
+            string content;
+            try
+            {
+                content = await File.ReadAllTextAsync(propsPath, ct);
+            }
+            catch (Exception ex)
+            {
+                ShowError(ex);
+                Pause();
+                return changed;
+            }
+
+            var entries = ParseJavaProperties(content);
+
+            AnsiConsole.Clear();
+            AnsiConsole.Write(new Rule("[bold]kadrtt.properties[/]").LeftJustified());
+            AnsiConsole.MarkupLine($"[grey]{Markup.Escape(propsPath)}[/]");
+            if (!string.IsNullOrWhiteSpace(cfg.FlexIpfsGwEndpoint))
+            {
+                AnsiConsole.MarkupLine("[yellow]Note:[/] ipfs.endpoint override is set; it will be applied on autostart/restart.");
+            }
+            AnsiConsole.WriteLine();
+
+            var table = new Table().Border(TableBorder.Rounded);
+            table.AddColumn("Key");
+            table.AddColumn("Value");
+            foreach (var kv in entries.OrderBy(e => e.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                table.AddRow(Markup.Escape(kv.Key), Markup.Escape(Short(kv.Value, 60)));
+            }
+            AnsiConsole.Write(table);
+            AnsiConsole.WriteLine();
+
+            var action = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("Action")
+                    .AddChoices("Edit", "Add", "Remove", "Back")
+            );
+
+            switch (action)
+            {
+                case "Edit":
+                {
+                    if (entries.Count == 0)
+                    {
+                        AnsiConsole.MarkupLine("[grey]No properties found.[/]");
+                        Pause();
+                        break;
+                    }
+                    var key = AnsiConsole.Prompt(
+                        new SelectionPrompt<string>()
+                            .Title("Select key")
+                            .PageSize(12)
+                            .MoreChoicesText("[grey](move up and down to reveal more)[/]")
+                            .AddChoices(entries.Keys.Order(StringComparer.OrdinalIgnoreCase))
+                            .UseConverter(Markup.Escape)
+                    );
+                    var current = entries.GetValueOrDefault(key, "");
+                    var value = AnsiConsole.Prompt(
+                        new TextPrompt<string>($"Value for '{EscapePrompt(key)}' [grey](current: {EscapePrompt(Short(current, 60))})[/]")
+                            .AllowEmpty()
+                    );
+                    if (value.Contains('\n') || value.Contains('\r'))
+                    {
+                        AnsiConsole.MarkupLine("[red]Value must be a single line.[/]");
+                        Pause();
+                        break;
+                    }
+                    if (TryUpsertJavaProperty(content, key, value, out var updatedContent))
+                    {
+                        await File.WriteAllTextAsync(propsPath, updatedContent, ct);
+                        changed = true;
+                        AnsiConsole.MarkupLine("[green]ok[/]");
+                        Pause();
+                    }
+                    break;
+                }
+                case "Add":
+                {
+                    var key = AnsiConsole.Ask<string>("Key");
+                    key = key.Trim();
+                    if (string.IsNullOrWhiteSpace(key) || key.Contains('=') || key.Contains(':') || key.Contains('\n') || key.Contains('\r'))
+                    {
+                        AnsiConsole.MarkupLine("[red]Invalid key.[/]");
+                        Pause();
+                        break;
+                    }
+                    var value = AnsiConsole.Prompt(new TextPrompt<string>("Value").AllowEmpty());
+                    if (value.Contains('\n') || value.Contains('\r'))
+                    {
+                        AnsiConsole.MarkupLine("[red]Value must be a single line.[/]");
+                        Pause();
+                        break;
+                    }
+                    if (TryUpsertJavaProperty(content, key, value, out var updatedContent))
+                    {
+                        await File.WriteAllTextAsync(propsPath, updatedContent, ct);
+                        changed = true;
+                        AnsiConsole.MarkupLine("[green]ok[/]");
+                        Pause();
+                    }
+                    break;
+                }
+                case "Remove":
+                {
+                    if (entries.Count == 0)
+                    {
+                        AnsiConsole.MarkupLine("[grey]No properties to remove.[/]");
+                        Pause();
+                        break;
+                    }
+                    var key = AnsiConsole.Prompt(
+                        new SelectionPrompt<string>()
+                            .Title("Select key to remove")
+                            .PageSize(12)
+                            .MoreChoicesText("[grey](move up and down to reveal more)[/]")
+                            .AddChoices(entries.Keys.Order(StringComparer.OrdinalIgnoreCase))
+                            .UseConverter(Markup.Escape)
+                    );
+                    if (!AnsiConsole.Confirm($"Remove '{key}'?", false))
+                    {
+                        break;
+                    }
+                    if (TryRemoveJavaProperty(content, key, out var updatedContent))
+                    {
+                        await File.WriteAllTextAsync(propsPath, updatedContent, ct);
+                        changed = true;
+                        AnsiConsole.MarkupLine("[green]ok[/]");
+                        Pause();
+                    }
+                    break;
+                }
+                case "Back":
+                    return changed;
+            }
+        }
+    }
+
+    private static string? ResolveFlexIpfsBaseDir(ClientConfig cfg)
+    {
+        cfg = cfg.Normalize();
+        if (!string.IsNullOrWhiteSpace(cfg.FlexIpfsBaseDir))
+        {
+            return cfg.FlexIpfsBaseDir;
+        }
+
+        var candidates = new List<string>
+        {
+            Path.Combine(AppContext.BaseDirectory, "flexible-ipfs-base"),
+            Path.Combine(AppContext.BaseDirectory, "..", "flexible-ipfs-base"),
+            Path.Combine(Environment.CurrentDirectory, "flexible-ipfs-base"),
+        };
+        foreach (var c in candidates)
+        {
+            if (Directory.Exists(c))
+            {
+                return Path.GetFullPath(c);
+            }
+        }
+        return null;
+    }
+
+    private static SortedDictionary<string, string> ParseJavaProperties(string content)
+    {
+        var dict = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var lines = content.Replace("\r\n", "\n").Split('\n');
+        foreach (var raw in lines)
+        {
+            var line = raw.TrimEnd('\r');
+            var trimLeft = line.TrimStart(' ', '\t');
+            if (string.IsNullOrWhiteSpace(trimLeft) || trimLeft.StartsWith("#", StringComparison.Ordinal) || trimLeft.StartsWith("!", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            var sepIndex = trimLeft.IndexOfAny(['=', ':']);
+            if (sepIndex <= 0)
+            {
+                continue;
+            }
+            var key = trimLeft[..sepIndex].Trim();
+            var value = trimLeft[(sepIndex + 1)..].Trim();
+            if (key.Length == 0)
+            {
+                continue;
+            }
+            dict[key] = value;
+        }
+        return dict;
+    }
+
+    private static bool TryUpsertJavaProperty(string original, string key, string value, out string updated)
+    {
+        updated = original;
+        key = key.Trim();
+        if (string.IsNullOrWhiteSpace(key) || key.IndexOfAny(['\r', '\n']) >= 0)
+        {
+            return false;
+        }
+        if (value.IndexOfAny(['\r', '\n']) >= 0)
+        {
+            return false;
+        }
+
+        var lineSep = original.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        var hadTrailingNewline = original.EndsWith(lineSep, StringComparison.Ordinal);
+        var lines = original.Split(lineSep);
+
+        var replaced = false;
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            var trimLeft = line.TrimStart(' ', '\t');
+            if (trimLeft.StartsWith("#", StringComparison.Ordinal) || trimLeft.StartsWith("!", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            var sepIndex = trimLeft.IndexOfAny(['=', ':']);
+            if (sepIndex <= 0)
+            {
+                continue;
+            }
+            var k = trimLeft[..sepIndex].Trim();
+            if (!string.Equals(k, key, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var indentLen = line.Length - trimLeft.Length;
+            var indent = indentLen > 0 ? line[..indentLen] : "";
+            var sep = trimLeft[sepIndex];
+            lines[i] = $"{indent}{key}{sep}{value}";
+            replaced = true;
+        }
+
+        if (!replaced)
+        {
+            var list = lines.ToList();
+            if (list.Count > 0 && list[^1].Length != 0)
+            {
+                list.Add("");
+            }
+            list.Add($"{key}={value}");
+            lines = list.ToArray();
+        }
+
+        updated = string.Join(lineSep, lines);
+        if (hadTrailingNewline && !updated.EndsWith(lineSep, StringComparison.Ordinal))
+        {
+            updated += lineSep;
+        }
+        return true;
+    }
+
+    private static bool TryRemoveJavaProperty(string original, string key, out string updated)
+    {
+        updated = original;
+        key = key.Trim();
+        if (string.IsNullOrWhiteSpace(key) || key.IndexOfAny(['\r', '\n']) >= 0)
+        {
+            return false;
+        }
+
+        var lineSep = original.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        var hadTrailingNewline = original.EndsWith(lineSep, StringComparison.Ordinal);
+        var lines = original.Split(lineSep);
+
+        var changed = false;
+        var kept = new List<string>(lines.Length);
+        foreach (var line in lines)
+        {
+            var trimLeft = line.TrimStart(' ', '\t');
+            if (trimLeft.StartsWith("#", StringComparison.Ordinal) || trimLeft.StartsWith("!", StringComparison.Ordinal))
+            {
+                kept.Add(line);
+                continue;
+            }
+            var sepIndex = trimLeft.IndexOfAny(['=', ':']);
+            if (sepIndex <= 0)
+            {
+                kept.Add(line);
+                continue;
+            }
+            var k = trimLeft[..sepIndex].Trim();
+            if (string.Equals(k, key, StringComparison.OrdinalIgnoreCase))
+            {
+                changed = true;
+                continue;
+            }
+            kept.Add(line);
+        }
+
+        if (!changed)
+        {
+            return false;
+        }
+
+        updated = string.Join(lineSep, kept);
+        if (hadTrailingNewline && !updated.EndsWith(lineSep, StringComparison.Ordinal))
+        {
+            updated += lineSep;
+        }
+        return true;
+    }
+
+    private static bool TryValidateHttpUrl(string url, out string error)
+    {
+        error = "";
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var u))
+        {
+            error = "not a valid absolute URL";
+            return false;
+        }
+        if (u.Scheme is not ("http" or "https"))
+        {
+            error = "scheme must be http or https";
+            return false;
+        }
+        return true;
+    }
+
+    private static string EscapePrompt(string value)
+    {
+        return value.Replace("[", "[[").Replace("]", "]]");
     }
 
     private static string ReadMultiline(string label)

@@ -58,11 +58,15 @@ Then create/register a board (writes `boards.json` under your OS config dir by d
 Interactive UI (TUI):
 
 ```bash
-./bbs-client ui
+./bbs-client
 
-# Auto-start backend (works out-of-the-box in the prebuilt bundle):
-./bbs-client --start-backend ui
+# (optional) explicit command:
+./bbs-client ui
 ```
+
+The client auto-starts the backend by default; disable with `--no-start-backend` or via the TUI Settings menu.
+The TUI Settings menu can also edit backend and Flexible-IPFS settings (including `flexible-ipfs-base/kadrtt.properties`).
+On Windows, double-click `bbs-client.exe` to open the TUI.
 
 When running from source, pass `--bbs-node-path ./backend-go/bbs-node` (or start `bbs-node` yourself).
 

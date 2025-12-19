@@ -7,6 +7,10 @@ public sealed class BackendLauncher : IDisposable
 {
     private Process? _process;
 
+    public bool IsManagingProcess => _process != null && !_process.HasExited;
+
+    public int? ManagedPid => _process is { HasExited: false } p ? p.Id : null;
+
     public async Task EnsureRunningAsync(string backendBaseUrl, bool startBackend, string? bbsNodePath, string[] bbsNodeArgs, CancellationToken ct)
     {
         if (await IsHealthyAsync(backendBaseUrl, ct))
@@ -19,10 +23,51 @@ public sealed class BackendLauncher : IDisposable
         }
         if (string.IsNullOrWhiteSpace(bbsNodePath))
         {
-            throw new InvalidOperationException("--bbs-node-path is required when --start-backend is set.");
+            throw new InvalidOperationException("bbs-node not found. Set --bbs-node-path, or disable auto-start with --no-start-backend.");
         }
         Start(bbsNodePath, bbsNodeArgs);
         await WaitHealthyAsync(backendBaseUrl, TimeSpan.FromSeconds(15), ct);
+    }
+
+    public void StopManaged()
+    {
+        if (_process == null)
+        {
+            return;
+        }
+        try
+        {
+            if (!_process.HasExited)
+            {
+                _process.Kill(entireProcessTree: true);
+                _process.WaitForExit(milliseconds: 5000);
+            }
+        }
+        catch
+        {
+        }
+        _process = null;
+    }
+
+    public async Task<bool> RestartManagedAsync(string backendBaseUrl, bool startBackend, string? bbsNodePath, string[] bbsNodeArgs, CancellationToken ct)
+    {
+        if (!startBackend)
+        {
+            return false;
+        }
+        if (!IsManagingProcess)
+        {
+            return false;
+        }
+        if (string.IsNullOrWhiteSpace(bbsNodePath))
+        {
+            throw new InvalidOperationException("bbs-node not found. Set --bbs-node-path, or disable auto-start with --no-start-backend.");
+        }
+
+        StopManaged();
+        Start(bbsNodePath, bbsNodeArgs);
+        await WaitHealthyAsync(backendBaseUrl, TimeSpan.FromSeconds(15), ct);
+        return true;
     }
 
     private void Start(string bbsNodePath, string[] bbsNodeArgs)
@@ -43,7 +88,7 @@ public sealed class BackendLauncher : IDisposable
         _process = Process.Start(psi) ?? throw new InvalidOperationException("failed to start bbs-node");
     }
 
-    private static async Task<bool> IsHealthyAsync(string backendBaseUrl, CancellationToken ct)
+    public static async Task<bool> IsHealthyAsync(string backendBaseUrl, CancellationToken ct)
     {
         try
         {

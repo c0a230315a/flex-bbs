@@ -58,11 +58,15 @@ GitHub Actions で OS 別の「全部入りバンドル」を作成します。�
 対話 UI(TUI):
 
 ```bash
-./bbs-client ui
+./bbs-client
 
-# バックエンド自動起動（配布バンドルならそのまま動きます）:
-./bbs-client --start-backend ui
+# （任意）明示的にコマンドを指定:
+./bbs-client ui
 ```
+
+クライアントはデフォルトでバックエンドを自動起動します。無効化する場合は `--no-start-backend` または TUI の Settings から変更してください。
+また、TUI の Settings からバックエンドおよび Flexible-IPFS の設定（`flexible-ipfs-base/kadrtt.properties` 含む）を編集できます。
+Windows では `bbs-client.exe` をダブルクリックすると TUI が起動します。
 
 ソースから実行する場合は `--bbs-node-path ./backend-go/bbs-node` を指定するか、別で `bbs-node` を起動してください。
 
