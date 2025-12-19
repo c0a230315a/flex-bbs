@@ -7,7 +7,7 @@ This repo currently contains:
 - `flexible-ipfs-base/` – prebuilt Flexible‑IPFS jars + run scripts.
 - `flexible-ipfs-runtime/` – bundled Java 17 runtimes per OS (`linux-x64`, `win-x64`, `osx-x64`).
 - `backend-go/` – Go backend node `bbs-node` (HTTP API under `/api/v1`).
-- `src/BbsClient/` – C# CLI client (`dotnet run --project src/BbsClient`).
+- `src/BbsClient/` – C# client (CLI + interactive TUI) (`dotnet run --project src/BbsClient`).
 
 ## Prebuilt bundle (one download)
 
@@ -53,7 +53,22 @@ Then create/register a board (writes `boards.json` under your OS config dir by d
 ./bbs-node-linux-amd64 init-board --board-id bbs.general --title General --author-priv-key 'ed25519:...'
 ```
 
-### Use the CLI client
+### Use the client
+
+Interactive UI (TUI):
+
+```bash
+./bbs-client ui
+
+# Auto-start backend (works out-of-the-box in the prebuilt bundle):
+./bbs-client --start-backend ui
+```
+
+When running from source, pass `--bbs-node-path ./backend-go/bbs-node` (or start `bbs-node` yourself).
+
+When entering multi-line text in the UI, finish with a single `.` line.
+
+CLI examples:
 
 ```bash
 ./bbs-client boards
@@ -107,6 +122,18 @@ Start the local build:
 
 ```bash
 ./backend-go/bbs-node --role=client --http 127.0.0.1:8080
+```
+
+Run the client UI:
+
+```bash
+dotnet run --project src/BbsClient -- ui
+```
+
+Or use the CLI:
+
+```bash
+dotnet run --project src/BbsClient -- boards
 ```
 
 ## Notes

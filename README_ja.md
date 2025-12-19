@@ -7,7 +7,7 @@
 - `flexible-ipfs-base/` – Flexible‑IPFS の jar と起動スクリプト。
 - `flexible-ipfs-runtime/` – OS 別に同梱された Java 17 ランタイム（`linux-x64`, `win-x64`, `osx-x64`）。
 - `backend-go/` – Go 製バックエンドノード `bbs-node`（`/api/v1` に HTTP API）。
-- `src/BbsClient/` – C# CLI クライアント（`dotnet run --project src/BbsClient`）。
+- `src/BbsClient/` – C# クライアント（CLI + 対話 UI(TUI)）（`dotnet run --project src/BbsClient`）。
 
 ## コンパイル版（配布バンドル）の動かし方（1回のダウンロード）
 
@@ -53,7 +53,22 @@ GitHub Actions で OS 別の「全部入りバンドル」を作成します。�
 ./bbs-node-linux-amd64 init-board --board-id bbs.general --title General --author-priv-key 'ed25519:...'
 ```
 
-### CLI クライアント
+### クライアント
+
+対話 UI(TUI):
+
+```bash
+./bbs-client ui
+
+# バックエンド自動起動（配布バンドルならそのまま動きます）:
+./bbs-client --start-backend ui
+```
+
+ソースから実行する場合は `--bbs-node-path ./backend-go/bbs-node` を指定するか、別で `bbs-node` を起動してください。
+
+UI で複数行テキストを入力する場合は、1 行だけの `.` を入力すると確定します。
+
+CLI 例:
 
 ```bash
 ./bbs-client boards
@@ -101,6 +116,18 @@ go build ./cmd/bbs-node
 
 ```bash
 ./backend-go/bbs-node --role=client --http 127.0.0.1:8080
+```
+
+クライアント UI:
+
+```bash
+dotnet run --project src/BbsClient -- ui
+```
+
+CLI:
+
+```bash
+dotnet run --project src/BbsClient -- boards
 ```
 
 ### C# クライアントのビルド

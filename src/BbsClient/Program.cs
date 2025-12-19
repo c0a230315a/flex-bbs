@@ -1,5 +1,6 @@
 using BbsClient.Api;
 using BbsClient.Storage;
+using BbsClient.Ui;
 using BbsClient.Util;
 
 var ct = CancellationToken.None;
@@ -22,13 +23,22 @@ var keyStore = new KeyStore(keysPath);
 var blockedStore = new BlockedStore(blockedPath);
 
 using var launcher = new BackendLauncher();
-await launcher.EnsureRunningAsync(
-    backend,
-    startBackend,
-    bbsNodePath,
-    BuildBbsNodeArgs(backend, dataDir),
-    ct
-);
+try
+{
+    var bbsNodeArgs = BuildBbsNodeArgs(backend, dataDir);
+    await launcher.EnsureRunningAsync(
+        backend,
+        startBackend,
+        bbsNodePath,
+        bbsNodeArgs,
+        ct
+    );
+}
+catch (Exception ex)
+{
+    Console.Error.WriteLine(ex.Message);
+    return ex is InvalidOperationException or UriFormatException ? 2 : 1;
+}
 
 using var http = new HttpClient();
 var api = new BbsApiClient(http, backend);
@@ -72,6 +82,9 @@ try
 
         case "tombstone-post":
             return await HandleTombstonePost(api, keyStore, rest, ct);
+
+        case "ui":
+            return await InteractiveUi.RunAsync(api, keyStore, blockedStore, backend, dataDir, ct);
 
         default:
             Console.Error.WriteLine($"Unknown command: {command}");
@@ -393,6 +406,10 @@ static int FindCommandIndex(string[] args)
     for (var i = 0; i < args.Length; i++)
     {
         var a = args[i];
+        if (a == "--")
+        {
+            return i + 1 < args.Length ? i + 1 : -1;
+        }
         if (!a.StartsWith("-", StringComparison.Ordinal))
         {
             return i;
@@ -401,12 +418,17 @@ static int FindCommandIndex(string[] args)
         {
             continue;
         }
-        if (i + 1 < args.Length && !args[i + 1].StartsWith("-", StringComparison.Ordinal))
+        if (OptionTakesValue(a) && i + 1 < args.Length && !args[i + 1].StartsWith("-", StringComparison.Ordinal))
         {
             i++;
         }
     }
     return -1;
+}
+
+static bool OptionTakesValue(string name)
+{
+    return name is "--backend" or "--data-dir" or "--bbs-node-path";
 }
 
 static string? DefaultBbsNodePath()
@@ -438,7 +460,7 @@ static string[] BuildBbsNodeArgs(string backendBaseUrl, string dataDir)
 
 static void PrintHelp()
 {
-    Console.WriteLine("BbsClient (CLI)");
+    Console.WriteLine("BbsClient");
     Console.WriteLine();
     Console.WriteLine("Global options:");
     Console.WriteLine("  --backend <url>      (default: http://127.0.0.1:8080)");
@@ -447,6 +469,7 @@ static void PrintHelp()
     Console.WriteLine("  --bbs-node-path <p>  (path to bbs-node)");
     Console.WriteLine();
     Console.WriteLine("Commands:");
+    Console.WriteLine("  ui  (interactive TUI)");
     Console.WriteLine("  keys list|generate --name <name>|delete --name <name>");
     Console.WriteLine("  blocked list|add --pub <pubKey>|remove --pub <pubKey>");
     Console.WriteLine("  boards");
