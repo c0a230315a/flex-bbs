@@ -24,10 +24,6 @@ func (g testThreadGetter) GetThread(ctx context.Context, threadID string) (GetTh
 	return g.resp, nil
 }
 
-type jsonErr struct {
-	Error string `json:"error"`
-}
-
 func TestGetThread_OK_DefaultGetter(t *testing.T) {
 	orig := threadGetter
 	defer func() { threadGetter = orig }()
@@ -65,10 +61,12 @@ func TestGetThread_NotFound_InvalidPath(t *testing.T) {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, w.Body.String())
 	}
 
-	var out jsonErr
-	_ = json.NewDecoder(resp.Body).Decode(&out)
-	if out.Error == "" {
-		t.Fatalf("expected error body")
+	var out jsonErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Code != "not_found" {
+		t.Fatalf("code=%q", out.Code)
 	}
 }
 
@@ -106,6 +104,14 @@ func TestGetThread_ThreadNotFound_FromGetter(t *testing.T) {
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, w.Body.String())
+	}
+
+	var out jsonErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Code != "not_found" {
+		t.Fatalf("code=%q", out.Code)
 	}
 }
 
