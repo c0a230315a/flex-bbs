@@ -42,7 +42,7 @@ jobs:
             major=$((major + 1))
             minor=0
             patch=0
-          else if [[ "${branch}" == "develop" ]]; then
+          elif [[ "${branch}" == "develop" ]]; then
             minor=$((minor + 1))
             patch=0
           else
