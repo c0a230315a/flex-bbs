@@ -256,8 +256,19 @@ public static class InteractiveUi
             "--title", title,
             "--author-priv-key", key.Priv,
             "--flexipfs-base-url", cfg.FlexIpfsBaseUrl,
+            $"--autostart-flexipfs={cfg.AutostartFlexIpfs.ToString().ToLowerInvariant()}",
             "--data-dir", cfg.DataDir,
         };
+        if (!string.IsNullOrWhiteSpace(cfg.FlexIpfsBaseDir))
+        {
+            args.Add("--flexipfs-base-dir");
+            args.Add(cfg.FlexIpfsBaseDir);
+        }
+        if (!string.IsNullOrWhiteSpace(cfg.FlexIpfsGwEndpoint))
+        {
+            args.Add("--flexipfs-gw-endpoint");
+            args.Add(cfg.FlexIpfsGwEndpoint);
+        }
         if (!string.IsNullOrWhiteSpace(description))
         {
             args.Add("--description");

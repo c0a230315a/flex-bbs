@@ -221,6 +221,9 @@ func runInitBoard(args []string) {
 	description := fs.String("description", "", "board description")
 	authorPrivKey := fs.String("author-priv-key", "", "author private key (ed25519:...)")
 	flexBase := fs.String("flexipfs-base-url", "http://127.0.0.1:5001/api/v0", "Flexible-IPFS HTTP API base URL")
+	flexBaseDir := fs.String("flexipfs-base-dir", "", "path to flexible-ipfs-base (auto-detected if empty)")
+	flexGWEndpoint := fs.String("flexipfs-gw-endpoint", "", "override ipfs.endpoint in flexible-ipfs-base/kadrtt.properties when autostarting (also via env FLEXIPFS_GW_ENDPOINT)")
+	autostartFlexIPFS := fs.Bool("autostart-flexipfs", true, "auto start local Flexible-IPFS if not running")
 	dd := fs.String("data-dir", "", "data directory (defaults to OS config dir)")
 	bf := fs.String("boards-file", "", "boards.json path (defaults to <data-dir>/boards.json)")
 	_ = fs.Parse(args)
@@ -236,6 +239,19 @@ func runInitBoard(args []string) {
 	boardsPath := *bf
 	if boardsPath == "" {
 		boardsPath = filepath.Join(data, "boards.json")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var flexProc *flexIPFSProc
+	if *autostartFlexIPFS {
+		p, err := maybeStartFlexIPFS(ctx, *flexBase, *flexBaseDir, resolveFlexIPFSGWEndpoint(*flexGWEndpoint))
+		if err != nil {
+			log.Printf("flex-ipfs autostart failed: %v", err)
+		} else {
+			flexProc = p
+			defer flexProc.stop()
+		}
 	}
 
 	flex := flexipfs.New(*flexBase)
@@ -257,7 +273,7 @@ func runInitBoard(args []string) {
 	if err := signature.SignBoardMeta(*authorPrivKey, bm); err != nil {
 		log.Fatalf("sign boardMeta: %v", err)
 	}
-	cid, err := st.SaveBoardMeta(context.Background(), bm)
+	cid, err := st.SaveBoardMeta(ctx, bm)
 	if err != nil {
 		log.Fatalf("save boardMeta: %v", err)
 	}
