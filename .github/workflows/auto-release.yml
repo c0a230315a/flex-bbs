@@ -42,9 +42,11 @@ jobs:
             major=$((major + 1))
             minor=0
             patch=0
-          else
+          else if [[ "${branch}" == "develop" ]]; then
             minor=$((minor + 1))
             patch=0
+          else
+            patch=$((patch + 1))
           fi
 
           next="v${major}.${minor}.${patch}"
@@ -77,7 +79,7 @@ jobs:
         with:
           tag_name: ${{ steps.semver.outputs.next }}
           generate_release_notes: true
-          prerelease: ${{ github.ref_name == 'develop' }}
+          prerelease: ${{ github.ref_name != 'main' }}
 
       - name: Trigger build workflow for new tag
         if: steps.tag.outputs.created == 'true'
