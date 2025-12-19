@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -76,23 +75,23 @@ func init() {
 // handleGetThread は GET /api/v1/threads/{threadId} を処理して JSON を返す。
 func handleGetThread(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
 	threadID, ok := parseThreadIDFromPath(r.URL.Path)
 	if !ok {
-		writeJSONError(w, http.StatusNotFound, "not found")
+		writeJSONError(w, http.StatusNotFound, "not_found", "not found")
 		return
 	}
 
 	resp, err := threadGetter.GetThread(r.Context(), threadID)
 	if err != nil {
 		if errors.Is(err, ErrThreadNotFound) {
-			writeJSONError(w, http.StatusNotFound, "thread not found")
+			writeJSONError(w, http.StatusNotFound, "not_found", "thread not found")
 			return
 		}
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 
@@ -115,21 +114,4 @@ func parseThreadIDFromPath(path string) (string, bool) {
 		return "", false
 	}
 	return rest, true
-}
-
-// jsonError は JSON エラーレスポンスの形。
-type jsonError struct {
-	Error string `json:"error"`
-}
-
-// writeJSON は任意の値を JSON で返す共通ヘルパー。
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-// writeJSONError はエラー用の JSON を返す共通ヘルパー。
-func writeJSONError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, jsonError{Error: msg})
 }
