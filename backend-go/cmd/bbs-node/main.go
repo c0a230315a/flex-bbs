@@ -43,14 +43,11 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "gen-key":
-			runGenKey(os.Args[2:])
-			return
+			os.Exit(runGenKey(os.Args[2:]))
 		case "init-board":
-			runInitBoard(os.Args[2:])
-			return
+			os.Exit(runInitBoard(os.Args[2:]))
 		case "add-board":
-			runAddBoard(os.Args[2:])
-			return
+			os.Exit(runAddBoard(os.Args[2:]))
 		}
 	}
 
@@ -166,15 +163,17 @@ func defaultDataDir() string {
 	return filepath.Join(".", "data")
 }
 
-func runGenKey(args []string) {
+func runGenKey(args []string) int {
 	fs := flag.NewFlagSet("gen-key", flag.ExitOnError)
 	_ = fs.Parse(args)
 
 	pub, priv, err := signature.GenerateKeyPair()
 	if err != nil {
-		log.Fatalf("GenerateKeyPair: %v", err)
+		log.Printf("GenerateKeyPair: %v", err)
+		return 1
 	}
 	fmt.Printf("{\"pub\":%q,\"priv\":%q}\n", pub, priv)
+	return 0
 }
 
 func runIndexSyncLoop(ctx context.Context, ix *indexer.Indexer, boards *config.BoardsStore, interval time.Duration) {
@@ -214,7 +213,7 @@ func runArchiveLoop(ctx context.Context, a *archive.Archiver, interval time.Dura
 	}
 }
 
-func runInitBoard(args []string) {
+func runInitBoard(args []string) int {
 	fs := flag.NewFlagSet("init-board", flag.ExitOnError)
 	boardID := fs.String("board-id", "", "board ID (e.g. bbs.general)")
 	title := fs.String("title", "", "board title")
@@ -229,7 +228,8 @@ func runInitBoard(args []string) {
 	_ = fs.Parse(args)
 
 	if *boardID == "" || *title == "" || *authorPrivKey == "" {
-		log.Fatalf("missing required fields: --board-id --title --author-priv-key")
+		log.Printf("missing required fields: --board-id --title --author-priv-key")
+		return 2
 	}
 
 	data := *dd
@@ -271,19 +271,23 @@ func runInitBoard(args []string) {
 		Signature:   "",
 	}
 	if err := signature.SignBoardMeta(*authorPrivKey, bm); err != nil {
-		log.Fatalf("sign boardMeta: %v", err)
+		log.Printf("sign boardMeta: %v", err)
+		return 1
 	}
 	cid, err := st.SaveBoardMeta(ctx, bm)
 	if err != nil {
-		log.Fatalf("save boardMeta: %v", err)
+		log.Printf("save boardMeta: %v", err)
+		return 1
 	}
 	if err := boards.Upsert(*boardID, cid); err != nil {
-		log.Fatalf("update boards.json: %v", err)
+		log.Printf("update boards.json: %v", err)
+		return 1
 	}
 	fmt.Printf("%s\n", cid)
+	return 0
 }
 
-func runAddBoard(args []string) {
+func runAddBoard(args []string) int {
 	fs := flag.NewFlagSet("add-board", flag.ExitOnError)
 	boardID := fs.String("board-id", "", "board ID (e.g. bbs.general)")
 	boardMetaCID := fs.String("board-meta-cid", "", "BoardMeta CID")
@@ -292,7 +296,8 @@ func runAddBoard(args []string) {
 	_ = fs.Parse(args)
 
 	if *boardID == "" || *boardMetaCID == "" {
-		log.Fatalf("missing required fields: --board-id --board-meta-cid")
+		log.Printf("missing required fields: --board-id --board-meta-cid")
+		return 2
 	}
 	data := *dd
 	if data == "" {
@@ -305,7 +310,9 @@ func runAddBoard(args []string) {
 	boards := config.NewBoardsStore(boardsPath)
 	_ = boards.Load()
 	if err := boards.Upsert(*boardID, *boardMetaCID); err != nil {
-		log.Fatalf("update boards.json: %v", err)
+		log.Printf("update boards.json: %v", err)
+		return 1
 	}
 	fmt.Printf("ok\n")
+	return 0
 }

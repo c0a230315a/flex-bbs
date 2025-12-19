@@ -10,11 +10,10 @@ import (
 )
 
 const (
-	AttrObjTypeBoardMeta     = "objtype_boardmeta"
-	AttrObjTypeThreadMeta    = "objtype_threadmeta"
-	AttrObjTypeBoardLogEntry = "objtype_boardlogentry"
-	AttrObjTypePost          = "objtype_post"
-	AttrVersion1             = "version_1"
+	AttrObjTypeBoardMetaV1     = "objtype_boardmeta_version_1"
+	AttrObjTypeThreadMetaV1    = "objtype_threadmeta_version_1"
+	AttrObjTypeBoardLogEntryV1 = "objtype_boardlogentry_version_1"
+	AttrObjTypePostV1          = "objtype_post_version_1"
 )
 
 type Storage struct {
@@ -34,7 +33,7 @@ func TagBoardThread(boardID, threadID string) string {
 }
 
 func (s *Storage) SavePost(ctx context.Context, boardID string, p *types.Post) (string, error) {
-	return s.saveJSON(ctx, []string{AttrObjTypePost, AttrVersion1}, []string{TagBoardThread(boardID, p.ThreadID)}, p)
+	return s.saveJSON(ctx, []string{AttrObjTypePostV1}, []string{TagBoardThread(boardID, p.ThreadID)}, p)
 }
 
 func (s *Storage) LoadPost(ctx context.Context, cid string) (*types.Post, error) {
@@ -46,11 +45,11 @@ func (s *Storage) LoadPost(ctx context.Context, cid string) (*types.Post, error)
 }
 
 func (s *Storage) SaveThreadMeta(ctx context.Context, m *types.ThreadMeta) (string, error) {
-	cid, err := s.saveJSON(ctx, []string{AttrObjTypeThreadMeta, AttrVersion1}, []string{TagBoard(m.BoardID)}, m)
+	cid, err := s.saveJSON(ctx, []string{AttrObjTypeThreadMetaV1}, []string{TagBoard(m.BoardID)}, m)
 	if err != nil {
 		return "", err
 	}
-	_, _ = s.saveJSON(ctx, []string{AttrObjTypeThreadMeta, AttrVersion1}, []string{TagBoardThread(m.BoardID, cid)}, m)
+	_, _ = s.saveJSON(ctx, []string{AttrObjTypeThreadMetaV1}, []string{TagBoardThread(m.BoardID, cid)}, m)
 	return cid, nil
 }
 
@@ -63,7 +62,7 @@ func (s *Storage) LoadThreadMeta(ctx context.Context, cid string) (*types.Thread
 }
 
 func (s *Storage) SaveBoardMeta(ctx context.Context, m *types.BoardMeta) (string, error) {
-	return s.saveJSON(ctx, []string{AttrObjTypeBoardMeta, AttrVersion1}, []string{TagBoard(m.BoardID)}, m)
+	return s.saveJSON(ctx, []string{AttrObjTypeBoardMetaV1}, []string{TagBoard(m.BoardID)}, m)
 }
 
 func (s *Storage) LoadBoardMeta(ctx context.Context, cid string) (*types.BoardMeta, error) {
@@ -75,7 +74,7 @@ func (s *Storage) LoadBoardMeta(ctx context.Context, cid string) (*types.BoardMe
 }
 
 func (s *Storage) SaveBoardLogEntry(ctx context.Context, e *types.BoardLogEntry) (string, error) {
-	return s.saveJSON(ctx, []string{AttrObjTypeBoardLogEntry, AttrVersion1}, []string{TagBoardThread(e.BoardID, e.ThreadID)}, e)
+	return s.saveJSON(ctx, []string{AttrObjTypeBoardLogEntryV1}, []string{TagBoardThread(e.BoardID, e.ThreadID)}, e)
 }
 
 func (s *Storage) LoadBoardLogEntry(ctx context.Context, cid string) (*types.BoardLogEntry, error) {

@@ -37,12 +37,12 @@ func (c *Client) PutValueWithAttr(ctx context.Context, value string, attrs, tags
 		q.Set("tags", strings.Join(tags, ","))
 	}
 
-	body, status, trailer, err := c.postQuery(ctx, "/dht/putvaluewithattr", q)
+	body, status, header, trailer, err := c.postQuery(ctx, "/dht/putvaluewithattr", q)
 	if err != nil {
 		return "", err
 	}
 	if status < 200 || status >= 300 {
-		return "", httpError(status, body, trailer)
+		return "", httpError(status, body, header, trailer)
 	}
 	return extractCID(body)
 }
@@ -50,12 +50,12 @@ func (c *Client) PutValueWithAttr(ctx context.Context, value string, attrs, tags
 func (c *Client) GetValue(ctx context.Context, cid string) ([]byte, error) {
 	q := url.Values{}
 	q.Set("cid", cid)
-	body, status, trailer, err := c.postQuery(ctx, "/dht/getvalue", q)
+	body, status, header, trailer, err := c.postQuery(ctx, "/dht/getvalue", q)
 	if err != nil {
 		return nil, err
 	}
 	if status < 200 || status >= 300 {
-		return nil, httpError(status, body, trailer)
+		return nil, httpError(status, body, header, trailer)
 	}
 	return unwrapValue(body), nil
 }
@@ -71,12 +71,12 @@ func (c *Client) GetByAttrs(ctx context.Context, attrs, tags []string, showAll b
 	if showAll {
 		q.Set("showall", "true")
 	}
-	body, status, trailer, err := c.postQuery(ctx, "/dht/getbyattrs", q)
+	body, status, header, trailer, err := c.postQuery(ctx, "/dht/getbyattrs", q)
 	if err != nil {
 		return nil, err
 	}
 	if status < 200 || status >= 300 {
-		return nil, httpError(status, body, trailer)
+		return nil, httpError(status, body, header, trailer)
 	}
 	cids, err := extractCIDList(body)
 	if err != nil {
@@ -87,12 +87,12 @@ func (c *Client) GetByAttrs(ctx context.Context, attrs, tags []string, showAll b
 }
 
 func (c *Client) ListAttrs(ctx context.Context) ([]string, error) {
-	body, status, trailer, err := c.postQuery(ctx, "/dht/listattrs", nil)
+	body, status, header, trailer, err := c.postQuery(ctx, "/dht/listattrs", nil)
 	if err != nil {
 		return nil, err
 	}
 	if status < 200 || status >= 300 {
-		return nil, httpError(status, body, trailer)
+		return nil, httpError(status, body, header, trailer)
 	}
 	var out []string
 	if err := json.Unmarshal(body, &out); err == nil {
@@ -112,12 +112,12 @@ func (c *Client) ListAttrs(ctx context.Context) ([]string, error) {
 }
 
 func (c *Client) ListTags(ctx context.Context) ([]string, error) {
-	body, status, trailer, err := c.postQuery(ctx, "/dht/listtags", nil)
+	body, status, header, trailer, err := c.postQuery(ctx, "/dht/listtags", nil)
 	if err != nil {
 		return nil, err
 	}
 	if status < 200 || status >= 300 {
-		return nil, httpError(status, body, trailer)
+		return nil, httpError(status, body, header, trailer)
 	}
 	var out []string
 	if err := json.Unmarshal(body, &out); err == nil {
@@ -137,12 +137,12 @@ func (c *Client) ListTags(ctx context.Context) ([]string, error) {
 }
 
 func (c *Client) PeerList(ctx context.Context) (string, error) {
-	body, status, trailer, err := c.postQuery(ctx, "/dht/peerlist", nil)
+	body, status, header, trailer, err := c.postQuery(ctx, "/dht/peerlist", nil)
 	if err != nil {
 		return "", err
 	}
 	if status < 200 || status >= 300 {
-		return "", httpError(status, body, trailer)
+		return "", httpError(status, body, header, trailer)
 	}
 	s, err := extractJSONString(body)
 	if err == nil {
@@ -151,7 +151,7 @@ func (c *Client) PeerList(ctx context.Context) (string, error) {
 	return string(bytes.TrimSpace(body)), nil
 }
 
-func (c *Client) postQuery(ctx context.Context, apiPath string, q url.Values) (body []byte, status int, trailer http.Header, err error) {
+func (c *Client) postQuery(ctx context.Context, apiPath string, q url.Values) (body []byte, status int, header http.Header, trailer http.Header, err error) {
 	fullURL := c.BaseURL + apiPath
 	if q != nil {
 		fullURL += "?" + q.Encode()
@@ -159,27 +159,40 @@ func (c *Client) postQuery(ctx context.Context, apiPath string, q url.Values) (b
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, nil)
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, 0, nil, nil, err
 	}
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, 0, nil, nil, err
 	}
 	defer resp.Body.Close()
 
 	b, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
-		return nil, resp.StatusCode, nil, readErr
+		return nil, resp.StatusCode, nil, nil, readErr
 	}
-	return b, resp.StatusCode, resp.Trailer, nil
+	return b, resp.StatusCode, resp.Header.Clone(), resp.Trailer, nil
 }
 
-func httpError(status int, body []byte, trailer http.Header) error {
+func httpError(status int, body []byte, header http.Header, trailer http.Header) error {
 	msg := strings.TrimSpace(string(body))
+	if msg == "" && header != nil {
+		// Flexible-IPFS sometimes reports errors in the *Trailer header value* (not the trailer section).
+		// Example: Trailer: Attribute+info.+should+be%3A+name_value
+		if v := strings.TrimSpace(header.Get("Trailer")); v != "" {
+			if decoded, err := url.QueryUnescape(v); err == nil && strings.TrimSpace(decoded) != "" {
+				v = decoded
+			}
+			msg = strings.TrimSpace(v)
+		}
+	}
 	if msg == "" && len(trailer) > 0 {
 		var parts []string
 		for k := range trailer {
 			for _, v := range trailer.Values(k) {
+				if decoded, err := url.QueryUnescape(v); err == nil && strings.TrimSpace(decoded) != "" {
+					v = decoded
+				}
 				parts = append(parts, fmt.Sprintf("%s: %s", k, v))
 			}
 		}

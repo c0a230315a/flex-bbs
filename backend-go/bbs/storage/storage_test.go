@@ -72,7 +72,7 @@ func TestSaveThreadMeta_DoublePutTags(t *testing.T) {
 		t.Fatalf("put call count: %d", len(calls))
 	}
 
-	if calls[0].attrs != "objtype_threadmeta,version_1" || calls[1].attrs != "objtype_threadmeta,version_1" {
+	if calls[0].attrs != "objtype_threadmeta_version_1" || calls[1].attrs != "objtype_threadmeta_version_1" {
 		t.Fatalf("attrs mismatch: %#v", calls)
 	}
 	if calls[0].tags != "board_bbs.general" {

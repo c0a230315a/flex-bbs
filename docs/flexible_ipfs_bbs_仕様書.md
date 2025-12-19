@@ -93,13 +93,13 @@ BBS ノード（Go）はこれらをラップする `FlexibleIPFSClient` を実�
 例:
 
 - BoardMeta:
-  - `attrs=objtype_boardmeta,version_1`
+  - `attrs=objtype_boardmeta_version_1`
   - `tags=board_<boardId>`
 - ThreadMeta:
-  - `attrs=objtype_threadmeta,version_1`
+  - `attrs=objtype_threadmeta_version_1`
   - `tags=board_<boardId>-thread_<threadId>`
 - BoardLogEntry:
-  - `attrs=objtype_boardlogentry,version_1`
+  - `attrs=objtype_boardlogentry_version_1`
   - `tags=board_<boardId>-thread_<threadId>`
 
 取得時:
@@ -292,7 +292,7 @@ prevLogCid=<prevLogCid or "">
 
 1. クライアントが新しい鍵ペア or 既存鍵を選択。
 2. `BoardMeta` JSON を生成（`logHeadCid = null`）。
-3. BoardMeta を `putvaluewithattr` で保存（attrs: `objtype_boardmeta,version_1`, tags: `board_<boardId>`）。
+3. BoardMeta を `putvaluewithattr` で保存（attrs: `objtype_boardmeta_version_1`, tags: `board_<boardId>`）。
 4. 得られた CID を別途記録（boardId と関連付け）。
 
 板一覧の発見方法は、v0.1 では外部配布（設定ファイル・Web ページ等）でよい。

@@ -22,7 +22,7 @@ func TestPutValueWithAttr_URLencodesValue(t *testing.T) {
 
 	c := New(srv.URL + "/api/v0")
 	value := `{"a":"x y","b":"1&2"}`
-	cid, err := c.PutValueWithAttr(context.Background(), value, []string{"objtype_post", "version_1"}, []string{"board_bbs.general"})
+	cid, err := c.PutValueWithAttr(context.Background(), value, []string{"objtype_post_version_1"}, []string{"board_bbs.general"})
 	if err != nil {
 		t.Fatalf("PutValueWithAttr: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestPutValueWithAttr_URLencodesValue(t *testing.T) {
 	if got.Get("value") != value {
 		t.Fatalf("value query mismatch: got=%q want=%q", got.Get("value"), value)
 	}
-	if got.Get("attrs") != "objtype_post,version_1" {
+	if got.Get("attrs") != "objtype_post_version_1" {
 		t.Fatalf("attrs mismatch: %q", got.Get("attrs"))
 	}
 	if got.Get("tags") != "board_bbs.general" {
