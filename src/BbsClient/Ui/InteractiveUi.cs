@@ -285,7 +285,7 @@ public static class InteractiveUi
             var output = await AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
                 .StartAsync("Creating board...", async _ => await RunProcessCaptureAsync(bbsNodePath, args, ct));
-            var cid = output.StdOut.Trim();
+            var cid = TryExtractCid(output.StdOut) ?? "";
             if (cid == "")
             {
                 AnsiConsole.MarkupLine("[green]ok[/]");
@@ -1824,12 +1824,16 @@ public static class InteractiveUi
 
     private static async Task<ProcessOutput> RunProcessCaptureAsync(string fileName, IEnumerable<string> args, CancellationToken ct)
     {
+        var stdout = new TailBuffer(200);
+        var stderr = new TailBuffer(200);
+
         var psi = new ProcessStartInfo
         {
             FileName = fileName,
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            RedirectStandardInput = true,
             WorkingDirectory = AppContext.BaseDirectory,
         };
         foreach (var a in args)
@@ -1838,8 +1842,16 @@ public static class InteractiveUi
         }
 
         using var p = Process.Start(psi) ?? throw new InvalidOperationException($"failed to start: {Path.GetFileName(fileName)}");
-        var stdoutTask = p.StandardOutput.ReadToEndAsync();
-        var stderrTask = p.StandardError.ReadToEndAsync();
+        try
+        {
+            p.StandardInput.Close();
+        }
+        catch
+        {
+        }
+
+        var stdoutTask = PumpLinesAsync(p.StandardOutput, stdout);
+        var stderrTask = PumpLinesAsync(p.StandardError, stderr);
 
         try
         {
@@ -1860,17 +1872,106 @@ public static class InteractiveUi
             throw;
         }
 
-        var stdout = await stdoutTask;
-        var stderr = await stderrTask;
+        var pumps = Task.WhenAll(stdoutTask, stderrTask);
+        if (await Task.WhenAny(pumps, Task.Delay(250)) != pumps)
+        {
+            // Some child processes (e.g. flex-ipfs) may inherit stdout/stderr and keep pipes open
+            // even after bbs-node exits. Close our side so the pump tasks can finish.
+            try
+            {
+                p.StandardOutput.Close();
+            }
+            catch
+            {
+            }
+            try
+            {
+                p.StandardError.Close();
+            }
+            catch
+            {
+            }
+            _ = await Task.WhenAny(pumps, Task.Delay(1000));
+        }
 
         if (p.ExitCode != 0)
         {
-            var msg = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
+            var msg = string.IsNullOrWhiteSpace(stderr.ToString()) ? stdout.ToString() : stderr.ToString();
             msg = string.IsNullOrWhiteSpace(msg) ? $"process exited with code {p.ExitCode}" : msg.Trim();
             throw new InvalidOperationException(msg);
         }
 
-        return new ProcessOutput(stdout, stderr, p.ExitCode);
+        return new ProcessOutput(stdout.ToString(), stderr.ToString(), p.ExitCode);
+    }
+
+    private static async Task PumpLinesAsync(StreamReader reader, TailBuffer buffer)
+    {
+        try
+        {
+            while (true)
+            {
+                var line = await reader.ReadLineAsync().ConfigureAwait(false);
+                if (line == null)
+                {
+                    break;
+                }
+                if (line.Contains("Received: NCL_PING", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                buffer.Add(line);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private sealed class TailBuffer(int maxLines)
+    {
+        private readonly Queue<string> _lines = new();
+
+        public void Add(string line)
+        {
+            _lines.Enqueue(line);
+            while (_lines.Count > maxLines)
+            {
+                _lines.Dequeue();
+            }
+        }
+
+        public override string ToString()
+        {
+            return string.Join("\n", _lines);
+        }
+    }
+
+    private static string? TryExtractCid(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        var tokens = text.Split(
+            new[] { ' ', '\t', '\r', '\n', '"', '\'' },
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries
+        );
+
+        string? last = null;
+        foreach (var token in tokens)
+        {
+            if (token.Length >= 20 && token.StartsWith("baf", StringComparison.OrdinalIgnoreCase))
+            {
+                last = token;
+                continue;
+            }
+            if (token.Length >= 40 && token.StartsWith("Qm", StringComparison.Ordinal))
+            {
+                last = token;
+            }
+        }
+        return last;
     }
 
     private sealed record Choice<T>(string Label, T? Value) where T : class;

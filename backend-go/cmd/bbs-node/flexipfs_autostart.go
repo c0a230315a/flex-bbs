@@ -19,6 +19,7 @@ import (
 type flexIPFSProc struct {
 	cmd         *exec.Cmd
 	stdinWriter io.Closer
+	logFile     *os.File
 }
 
 func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride, gwEndpointOverride string) (*flexIPFSProc, error) {
@@ -63,6 +64,10 @@ func (p *flexIPFSProc) stop() {
 	_ = p.cmd.Process.Signal(os.Interrupt)
 	time.Sleep(2 * time.Second)
 	_ = p.cmd.Process.Kill()
+	if p.logFile != nil {
+		_ = p.logFile.Close()
+		p.logFile = nil
+	}
 }
 
 func isLocalBaseURL(baseURL string) bool {
@@ -168,11 +173,30 @@ func startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride string) (*flexIPFSPr
 		"IPFS_HOME="+filepath.Join(flexBaseDir, ".ipfs"),
 	)
 	cmd.Stdin = stdinR
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var logFile *os.File
+	if !isCharDevice(os.Stdout) || !isCharDevice(os.Stderr) {
+		// When bbs-node is run with stdout/stderr redirected (e.g., from the TUI),
+		// inheriting those pipes can keep the parent process' output streams open
+		// even after bbs-node exits, which can make callers appear to "hang".
+		// Log to a file instead in that case.
+		if f, err := os.OpenFile(filepath.Join(flexBaseDir, "flex-ipfs.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+			logFile = f
+			cmd.Stdout = f
+			cmd.Stderr = f
+		} else {
+			cmd.Stdout = io.Discard
+			cmd.Stderr = io.Discard
+		}
+	} else {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
 
 	if err := cmd.Start(); err != nil {
 		_ = stdinW.Close()
+		if logFile != nil {
+			_ = logFile.Close()
+		}
 		return nil, err
 	}
 
@@ -186,7 +210,15 @@ func startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride string) (*flexIPFSPr
 		}
 	}()
 
-	return &flexIPFSProc{cmd: cmd, stdinWriter: stdinW}, nil
+	return &flexIPFSProc{cmd: cmd, stdinWriter: stdinW, logFile: logFile}, nil
+}
+
+func isCharDevice(f *os.File) bool {
+	st, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (st.Mode() & os.ModeCharDevice) != 0
 }
 
 func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
