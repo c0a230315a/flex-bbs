@@ -19,6 +19,7 @@ import (
 // ========================================
 
 // FlexIPFSClient は Flexible-IPFS HTTP API とやり取りするためのインターフェースです。
+// 仕様書上の名称に合わせた別名として FlexibleIPFSClient も用意しています。
 type FlexIPFSClient interface {
 	// PutValueWithAttr は属性とタグ付きで値をDHTに格納します。
 	PutValueWithAttr(ctx context.Context, key string, value []byte, attrs map[string]string, tags []string) error
@@ -41,6 +42,10 @@ type FlexIPFSClient interface {
 	// BaseURL は Flexible-IPFS API のベースURLを返します。
 	BaseURL() string
 }
+
+// FlexibleIPFSClient は FlexIPFSClient の別名です。
+// コード上の型名と仕様書上の用語を揃えるために定義しています。
+type FlexibleIPFSClient = FlexIPFSClient
 
 // FlexGetValueResponse は /dht/getvalue からのレスポンスを表します。
 type FlexGetValueResponse struct {
@@ -113,12 +118,24 @@ func NewFlexIPFSClient(baseURL string) FlexIPFSClient {
 	}
 }
 
+// NewFlexibleIPFSClient は FlexibleIPFSClient 用のコンストラクタ別名です。
+// 内部的には NewFlexIPFSClient と同じ実装を呼び出します。
+func NewFlexibleIPFSClient(baseURL string) FlexibleIPFSClient {
+	return NewFlexIPFSClient(baseURL)
+}
+
 // NewFlexIPFSClientWithHTTPClient はカスタムHTTPクライアントを使用してクライアントを作成します。
 func NewFlexIPFSClientWithHTTPClient(baseURL string, httpClient *http.Client) FlexIPFSClient {
 	return &httpFlexIPFSClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		httpClient: httpClient,
 	}
+}
+
+// NewFlexibleIPFSClientWithHTTPClient は FlexibleIPFSClient 用のコンストラクタ別名です。
+// 内部的には NewFlexIPFSClientWithHTTPClient と同じ実装を呼び出します。
+func NewFlexibleIPFSClientWithHTTPClient(baseURL string, httpClient *http.Client) FlexibleIPFSClient {
+	return NewFlexIPFSClientWithHTTPClient(baseURL, httpClient)
 }
 
 func (c *httpFlexIPFSClient) BaseURL() string {
