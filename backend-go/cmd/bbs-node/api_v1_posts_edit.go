@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -261,35 +260,6 @@ func PostEditSignPayload(
 	})
 }
 
-func isRFC3339OrNano(s string) bool {
-	if _, err := time.Parse(time.RFC3339Nano, s); err == nil {
-		return true
-	}
-	if _, err := time.Parse(time.RFC3339, s); err == nil {
-		return true
-	}
-	return false
-}
-
-// --- small JSON helpers (shared within package) ---
-
-type jsonErrorResponse struct {
-	Error string `json:"error"`
-	Code  string `json:"code"`
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		log.Printf("error encoding json: %v", err)
-	}
-}
-
-func writeJSONError(w http.ResponseWriter, status int, code string, message string) {
-	writeJSON(w, status, jsonErrorResponse{Error: message, Code: code})
-}
-
 // seedPostForTests はテスト用に in-memory store に投稿を登録する。
 //
 // 差し替えメモ:
@@ -297,5 +267,11 @@ func writeJSONError(w http.ResponseWriter, status int, code string, message stri
 func seedPostForTests(p storedPost) {
 	postsStoreMu.Lock()
 	postsStore[p.PostCid] = p
+	postsStoreMu.Unlock()
+}
+
+func resetPostsStoreForTests() {
+	postsStoreMu.Lock()
+	postsStore = map[string]storedPost{}
 	postsStoreMu.Unlock()
 }
