@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-// --- Ed25519 key handling ---
+// ---#4 Ed25519 key handling ---
 
 const (
 	// keyPrefixEd25519 は鍵文字列の種類判別用プレフィックス。
