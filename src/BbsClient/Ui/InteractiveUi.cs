@@ -34,7 +34,12 @@ public static class InteractiveUi
         try
         {
             var bbsNodePath = cfg.BbsNodePath ?? BbsNodePathResolver.Resolve();
-            await launcher.EnsureRunningAsync(cfg.BackendBaseUrl, cfg.StartBackend, bbsNodePath, BbsNodeArgsBuilder.Build(cfg), ct);
+            await AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .StartAsync("Ensuring backend is running...", async _ =>
+                {
+                    await launcher.EnsureRunningAsync(cfg.BackendBaseUrl, cfg.StartBackend, bbsNodePath, BbsNodeArgsBuilder.Build(cfg), ct);
+                });
         }
         catch (Exception ex)
         {
@@ -277,7 +282,9 @@ public static class InteractiveUi
 
         try
         {
-            var output = await RunProcessCaptureAsync(bbsNodePath, args, ct);
+            var output = await AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .StartAsync("Creating board...", async _ => await RunProcessCaptureAsync(bbsNodePath, args, ct));
             var cid = output.StdOut.Trim();
             if (cid == "")
             {
@@ -332,7 +339,9 @@ public static class InteractiveUi
 
         try
         {
-            _ = await RunProcessCaptureAsync(bbsNodePath, args, ct);
+            _ = await AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .StartAsync("Registering board...", async _ => await RunProcessCaptureAsync(bbsNodePath, args, ct));
             AnsiConsole.MarkupLine("[green]ok[/]");
         }
         catch (Exception ex)
@@ -1293,7 +1302,12 @@ public static class InteractiveUi
             try
             {
                 var bbsNodePath = newCfg.BbsNodePath ?? BbsNodePathResolver.Resolve();
-                await launcher.EnsureRunningAsync(newCfg.BackendBaseUrl, newCfg.StartBackend, bbsNodePath, BbsNodeArgsBuilder.Build(newCfg), ct);
+                await AnsiConsole.Status()
+                    .Spinner(Spinner.Known.Dots)
+                    .StartAsync("Starting backend...", async _ =>
+                    {
+                        await launcher.EnsureRunningAsync(newCfg.BackendBaseUrl, newCfg.StartBackend, bbsNodePath, BbsNodeArgsBuilder.Build(newCfg), ct);
+                    });
                 AnsiConsole.MarkupLine("[green]ok[/] started");
             }
             catch (Exception ex)
@@ -1340,7 +1354,12 @@ public static class InteractiveUi
                     try
                     {
                         var bbsNodePath = cfg.BbsNodePath ?? BbsNodePathResolver.Resolve();
-                        await launcher.EnsureRunningAsync(cfg.BackendBaseUrl, cfg.StartBackend, bbsNodePath, BbsNodeArgsBuilder.Build(cfg), ct);
+                        await AnsiConsole.Status()
+                            .Spinner(Spinner.Known.Dots)
+                            .StartAsync("Starting backend...", async _ =>
+                            {
+                                await launcher.EnsureRunningAsync(cfg.BackendBaseUrl, cfg.StartBackend, bbsNodePath, BbsNodeArgsBuilder.Build(cfg), ct);
+                            });
                         AnsiConsole.MarkupLine("[green]ok[/]");
                     }
                     catch (Exception ex)
@@ -1379,7 +1398,12 @@ public static class InteractiveUi
 
         try
         {
-            var restarted = await launcher.RestartManagedAsync(cfg.BackendBaseUrl, cfg.StartBackend, bbsNodePath, bbsNodeArgs, ct);
+            var restarted = await AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .StartAsync("Restarting backend...", async _ =>
+                {
+                    return await launcher.RestartManagedAsync(cfg.BackendBaseUrl, cfg.StartBackend, bbsNodePath, bbsNodeArgs, ct);
+                });
             if (restarted)
             {
                 AnsiConsole.MarkupLine("[green]ok[/] restarted");
@@ -1388,7 +1412,12 @@ public static class InteractiveUi
 
             if (!await BackendLauncher.IsHealthyAsync(cfg.BackendBaseUrl, ct))
             {
-                await launcher.EnsureRunningAsync(cfg.BackendBaseUrl, cfg.StartBackend, bbsNodePath, bbsNodeArgs, ct);
+                await AnsiConsole.Status()
+                    .Spinner(Spinner.Known.Dots)
+                    .StartAsync("Starting backend...", async _ =>
+                    {
+                        await launcher.EnsureRunningAsync(cfg.BackendBaseUrl, cfg.StartBackend, bbsNodePath, bbsNodeArgs, ct);
+                    });
                 AnsiConsole.MarkupLine("[green]ok[/] started");
                 return;
             }
