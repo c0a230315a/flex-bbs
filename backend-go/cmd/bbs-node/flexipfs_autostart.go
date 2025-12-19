@@ -110,6 +110,17 @@ func resolveFlexDirs(baseOverride string) (flexBaseDir, runtimeDir string, err e
 			break
 		}
 	}
+
+	// Ensure paths are absolute; autostart needs a stable layout regardless of the
+	// caller's working directory and the bbs-node executable location.
+	if abs, absErr := filepath.Abs(flexBaseDir); absErr == nil {
+		flexBaseDir = abs
+	}
+	if runtimeDir != "" {
+		if abs, absErr := filepath.Abs(runtimeDir); absErr == nil {
+			runtimeDir = abs
+		}
+	}
 	return flexBaseDir, runtimeDir, nil
 }
 
