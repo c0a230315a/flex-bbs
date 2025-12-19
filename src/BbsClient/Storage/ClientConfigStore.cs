@@ -49,6 +49,7 @@ public sealed class ClientConfigStore
 public sealed record ClientConfig
 {
     public string BackendBaseUrl { get; init; } = "http://127.0.0.1:8080";
+    public string BackendRole { get; init; } = "indexer";
     public string DataDir { get; init; } = ConfigPaths.DefaultAppDir();
     public bool StartBackend { get; init; } = true;
     public string? BbsNodePath { get; init; }
@@ -61,6 +62,7 @@ public sealed record ClientConfig
     public ClientConfig Normalize()
     {
         var backendBaseUrl = string.IsNullOrWhiteSpace(BackendBaseUrl) ? "http://127.0.0.1:8080" : BackendBaseUrl.Trim();
+        var backendRole = NormalizeRole(BackendRole);
         var dataDir = string.IsNullOrWhiteSpace(DataDir) ? ConfigPaths.DefaultAppDir() : DataDir.Trim();
         var bbsNodePath = string.IsNullOrWhiteSpace(BbsNodePath) ? null : BbsNodePath.Trim();
 
@@ -71,11 +73,25 @@ public sealed record ClientConfig
         return this with
         {
             BackendBaseUrl = backendBaseUrl,
+            BackendRole = backendRole,
             DataDir = dataDir,
             BbsNodePath = bbsNodePath,
             FlexIpfsBaseUrl = flexIpfsBaseUrl,
             FlexIpfsBaseDir = flexIpfsBaseDir,
             FlexIpfsGwEndpoint = flexIpfsGwEndpoint,
+        };
+    }
+
+    private static string NormalizeRole(string role)
+    {
+        role = string.IsNullOrWhiteSpace(role) ? "indexer" : role.Trim().ToLowerInvariant();
+        return role switch
+        {
+            "client" => role,
+            "indexer" => role,
+            "archiver" => role,
+            "full" => role,
+            _ => "indexer",
         };
     }
 }

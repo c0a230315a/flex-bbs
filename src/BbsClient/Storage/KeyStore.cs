@@ -1,5 +1,6 @@
 using System.Text.Json;
-using NSec.Cryptography;
+using System.Security.Cryptography;
+using Chaos.NaCl;
 
 namespace BbsClient.Storage;
 
@@ -44,19 +45,15 @@ public sealed class KeyStore
 
     public async Task<KeyEntry> GenerateAsync(string name, CancellationToken ct)
     {
-        var alg = SignatureAlgorithm.Ed25519;
-        using var key = Key.Create(alg, new KeyCreationParameters
-        {
-            ExportPolicy = KeyExportPolicies.AllowPlaintextExport,
-        });
-
-        var pub = key.Export(KeyBlobFormat.RawPublicKey);
-        var priv = key.Export(KeyBlobFormat.RawPrivateKey);
+        var seed = RandomNumberGenerator.GetBytes(32);
+        var pub = new byte[32];
+        var privExpanded = new byte[64];
+        Ed25519.KeyPairFromSeed(pub, privExpanded, seed);
 
         var entry = new KeyEntry(
             name,
-            $"ed25519:{Convert.ToBase64String(pub)}",
-            $"ed25519:{Convert.ToBase64String(priv)}"
+            $"ed25519:{ToBase64Raw(pub)}",
+            $"ed25519:{ToBase64Raw(seed)}"
         );
 
         var keys = await LoadAsync(ct);
@@ -79,7 +76,12 @@ public sealed class KeyStore
         }
         await SaveAsync(keys, ct);
     }
+
+    private static string ToBase64Raw(byte[] bytes)
+    {
+        // Match Go's base64.RawStdEncoding (no padding).
+        return Convert.ToBase64String(bytes).TrimEnd('=');
+    }
 }
 
 public sealed record KeyEntry(string Name, string Pub, string Priv);
-

@@ -53,6 +53,8 @@ Then create/register a board (writes `boards.json` under your OS config dir by d
 ./bbs-node-linux-amd64 init-board --board-id bbs.general --title General --author-priv-key 'ed25519:...'
 ```
 
+You can also do this from the client TUI: `Browse boards` → `Create board`.
+
 ### Use the client
 
 Interactive UI (TUI):
@@ -67,6 +69,8 @@ Interactive UI (TUI):
 The client auto-starts the backend by default; disable with `--no-start-backend` or via the TUI Settings menu.
 The TUI Settings menu can also edit backend and Flexible-IPFS settings (including `flexible-ipfs-base/kadrtt.properties`).
 On Windows, double-click `bbs-client.exe` to open the TUI.
+
+Note: `Search posts` requires `bbs-node` role `indexer` or `full` (TUI: Settings → Client / Backend → Backend role).
 
 When running from source, pass `--bbs-node-path ./backend-go/bbs-node` (or start `bbs-node` yourself).
 

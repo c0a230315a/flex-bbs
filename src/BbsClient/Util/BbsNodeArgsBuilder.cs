@@ -13,7 +13,7 @@ public static class BbsNodeArgsBuilder
 
         var args = new List<string>
         {
-            "--role=client",
+            $"--role={cfg.BackendRole}",
             "--http", hostPort,
             "--data-dir", cfg.DataDir,
             "--flexipfs-base-url", cfg.FlexIpfsBaseUrl,

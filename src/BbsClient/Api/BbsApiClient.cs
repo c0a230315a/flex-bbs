@@ -86,7 +86,9 @@ public sealed class BbsApiClient
         query.Add($"limit={limit}");
         query.Add($"offset={offset}");
         var url = $"{_baseUrl}/api/v1/search/posts?{string.Join("&", query)}";
-        return await _http.GetFromJsonAsync<List<SearchPostResult>>(url, JsonOptions, ct) ?? [];
+        var resp = await _http.GetAsync(url, ct);
+        await EnsureSuccess(resp);
+        return (await resp.Content.ReadFromJsonAsync<List<SearchPostResult>>(JsonOptions, ct)) ?? [];
     }
 
     private static async Task EnsureSuccess(HttpResponseMessage resp)
@@ -99,4 +101,3 @@ public sealed class BbsApiClient
         throw new HttpRequestException($"HTTP {(int)resp.StatusCode}: {body}");
     }
 }
-

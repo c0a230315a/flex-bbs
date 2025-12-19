@@ -1,6 +1,7 @@
 using BbsClient.Api;
 using BbsClient.Storage;
 using BbsClient.Util;
+using System.Diagnostics;
 using Spectre.Console;
 
 namespace BbsClient.Ui;
@@ -47,6 +48,7 @@ public static class InteractiveUi
             AnsiConsole.Clear();
             AnsiConsole.Write(new Rule("[bold]Flex BBS Client[/]").LeftJustified());
             AnsiConsole.MarkupLine($"[grey]Backend:[/] {Markup.Escape(cfg.BackendBaseUrl)} [{(healthy ? "green" : "red")}]{(healthy ? "up" : "down")}[/]");
+            AnsiConsole.MarkupLine($"[grey]Backend role (managed):[/] {Markup.Escape(cfg.BackendRole)}");
             AnsiConsole.MarkupLine($"[grey]Data dir:[/] {Markup.Escape(cfg.DataDir)}");
             if (!string.IsNullOrWhiteSpace(backendStartError) && !healthy)
             {
@@ -65,7 +67,7 @@ public static class InteractiveUi
                 switch (choice)
                 {
                     case "Browse boards":
-                        await BrowseBoardsAsync(api, keys, blocked, ct);
+                        await BrowseBoardsAsync(api, cfg, keys, blocked, ct);
                         break;
                     case "Search posts":
                         await SearchPostsAsync(api, keys, blocked, ct);
@@ -105,7 +107,7 @@ public static class InteractiveUi
         }
     }
 
-    private static async Task BrowseBoardsAsync(BbsApiClient api, KeyStore keys, BlockedStore blocked, CancellationToken ct)
+    private static async Task BrowseBoardsAsync(BbsApiClient api, ClientConfig cfg, KeyStore keys, BlockedStore blocked, CancellationToken ct)
     {
         while (true)
         {
@@ -131,11 +133,13 @@ public static class InteractiveUi
             var table = new Table().Border(TableBorder.Rounded);
             table.AddColumn("BoardID");
             table.AddColumn("Title");
+            table.AddColumn("MetaCID");
             foreach (var b in boards)
             {
                 table.AddRow(
                     Markup.Escape(b.Board.BoardID),
-                    Markup.Escape(b.Board.Title)
+                    Markup.Escape(b.Board.Title),
+                    Markup.Escape(Short(b.BoardMetaCID, 24))
                 );
             }
             AnsiConsole.Write(table);
@@ -144,32 +148,187 @@ public static class InteractiveUi
             if (boards.Count == 0)
             {
                 AnsiConsole.MarkupLine("[grey]No boards found.[/]");
-                Pause();
-                return;
+                AnsiConsole.WriteLine();
             }
 
-            var choices = new List<Choice<BoardItem>>
+            var actions = new List<string>
             {
-                new("Back", null),
+                "Open board",
+                "Create board",
+                "Add board",
+                "Refresh",
+                "Back",
             };
-            choices.AddRange(boards.Select(b => new Choice<BoardItem>($"{b.Board.BoardID}  {b.Board.Title}", b)));
+            var action = AnsiConsole.Prompt(new SelectionPrompt<string>().Title("Action").AddChoices(actions));
 
-            var selected = AnsiConsole.Prompt(
-                new SelectionPrompt<Choice<BoardItem>>()
-                    .Title("Select board")
-                    .PageSize(12)
-                    .MoreChoicesText("[grey](move up and down to reveal more boards)[/]")
-                    .AddChoices(choices)
-                    .UseConverter(c => Markup.Escape(c.Label))
-            );
-
-            if (selected.Value == null)
+            switch (action)
             {
-                return;
-            }
+                case "Open board":
+                {
+                    if (boards.Count == 0)
+                    {
+                        AnsiConsole.MarkupLine("[grey]No boards to open.[/]");
+                        Pause();
+                        break;
+                    }
 
-            await BrowseThreadsAsync(api, keys, blocked, selected.Value.Board.BoardID, selected.Value.Board.Title, ct);
+                    var selected = AnsiConsole.Prompt(
+                        new SelectionPrompt<BoardItem>()
+                            .Title("Select board")
+                            .PageSize(12)
+                            .MoreChoicesText("[grey](move up and down to reveal more boards)[/]")
+                            .AddChoices(boards)
+                            .UseConverter(b => $"{Markup.Escape(b.Board.BoardID)}  {Markup.Escape(b.Board.Title)}  [grey]{Markup.Escape(Short(b.BoardMetaCID, 24))}[/]")
+                    );
+
+                    await BrowseThreadsAsync(api, keys, blocked, selected.Board.BoardID, selected.Board.Title, ct);
+                    break;
+                }
+                case "Create board":
+                    await CreateBoardFlowAsync(cfg, keys, ct);
+                    break;
+                case "Add board":
+                    await AddBoardFlowAsync(cfg, ct);
+                    break;
+                case "Refresh":
+                    break;
+                case "Back":
+                    return;
+            }
         }
+    }
+
+    private static async Task CreateBoardFlowAsync(ClientConfig cfg, KeyStore keys, CancellationToken ct)
+    {
+        var bbsNodePath = cfg.BbsNodePath ?? BbsNodePathResolver.Resolve();
+        if (string.IsNullOrWhiteSpace(bbsNodePath))
+        {
+            AnsiConsole.MarkupLine("[red]bbs-node not found.[/] Set it in Settings → Client / Backend.");
+            Pause();
+            return;
+        }
+
+        var key = await PromptKeyAsync(keys, ct);
+        if (key == null)
+        {
+            return;
+        }
+
+        var boardId = AnsiConsole.Ask<string>("Board ID (e.g. bbs.general)");
+        if (string.IsNullOrWhiteSpace(boardId))
+        {
+            AnsiConsole.MarkupLine("[yellow]Board ID is empty. Canceled.[/]");
+            Pause();
+            return;
+        }
+        boardId = boardId.Trim();
+
+        var title = AnsiConsole.Ask<string>("Title");
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            AnsiConsole.MarkupLine("[yellow]Title is empty. Canceled.[/]");
+            Pause();
+            return;
+        }
+        title = title.Trim();
+
+        var description = EmptyToNull(AnsiConsole.Ask("Description (optional)", ""));
+
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine($"[grey]BoardID:[/] {Markup.Escape(boardId)}");
+        AnsiConsole.MarkupLine($"[grey]Title:[/] {Markup.Escape(title)}");
+        if (description != null)
+        {
+            AnsiConsole.MarkupLine($"[grey]Description:[/] {Markup.Escape(description)}");
+        }
+        AnsiConsole.MarkupLine($"[grey]Author key:[/] {Markup.Escape(key.Name)}  [grey]{Markup.Escape(Short(key.Pub, 32))}[/]");
+        AnsiConsole.WriteLine();
+
+        if (!AnsiConsole.Confirm("Create this board and register it locally (boards.json)?", true))
+        {
+            return;
+        }
+
+        var args = new List<string>
+        {
+            "init-board",
+            "--board-id", boardId,
+            "--title", title,
+            "--author-priv-key", key.Priv,
+            "--flexipfs-base-url", cfg.FlexIpfsBaseUrl,
+            "--data-dir", cfg.DataDir,
+        };
+        if (!string.IsNullOrWhiteSpace(description))
+        {
+            args.Add("--description");
+            args.Add(description);
+        }
+
+        try
+        {
+            var output = await RunProcessCaptureAsync(bbsNodePath, args, ct);
+            var cid = output.StdOut.Trim();
+            if (cid == "")
+            {
+                AnsiConsole.MarkupLine("[green]ok[/]");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine($"[green]ok[/] boardMetaCid={Markup.Escape(cid)}");
+            }
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex);
+        }
+
+        Pause();
+    }
+
+    private static async Task AddBoardFlowAsync(ClientConfig cfg, CancellationToken ct)
+    {
+        var bbsNodePath = cfg.BbsNodePath ?? BbsNodePathResolver.Resolve();
+        if (string.IsNullOrWhiteSpace(bbsNodePath))
+        {
+            AnsiConsole.MarkupLine("[red]bbs-node not found.[/] Set it in Settings → Client / Backend.");
+            Pause();
+            return;
+        }
+
+        var boardId = AnsiConsole.Ask<string>("Board ID");
+        var boardMetaCid = AnsiConsole.Ask<string>("BoardMeta CID");
+        if (string.IsNullOrWhiteSpace(boardId) || string.IsNullOrWhiteSpace(boardMetaCid))
+        {
+            AnsiConsole.MarkupLine("[yellow]Board ID / CID is empty. Canceled.[/]");
+            Pause();
+            return;
+        }
+        boardId = boardId.Trim();
+        boardMetaCid = boardMetaCid.Trim();
+
+        if (!AnsiConsole.Confirm("Register this board locally (boards.json)?", true))
+        {
+            return;
+        }
+
+        var args = new List<string>
+        {
+            "add-board",
+            "--board-id", boardId,
+            "--board-meta-cid", boardMetaCid,
+            "--data-dir", cfg.DataDir,
+        };
+
+        try
+        {
+            _ = await RunProcessCaptureAsync(bbsNodePath, args, ct);
+            AnsiConsole.MarkupLine("[green]ok[/]");
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex);
+        }
+        Pause();
     }
 
     private static async Task BrowseThreadsAsync(
@@ -945,6 +1104,7 @@ public static class InteractiveUi
             AnsiConsole.Write(new Rule("[bold]Settings[/]").LeftJustified());
             AnsiConsole.MarkupLine($"[grey]Config:[/] {Markup.Escape(configStore.ConfigPath)}");
             AnsiConsole.MarkupLine($"[grey]Backend:[/] {Markup.Escape(cfg.BackendBaseUrl)} [{(healthy ? "green" : "red")}]{(healthy ? "up" : "down")}[/]");
+            AnsiConsole.MarkupLine($"[grey]Backend role (managed):[/] {Markup.Escape(cfg.BackendRole)}");
             AnsiConsole.MarkupLine($"[grey]Auto-start backend:[/] {cfg.StartBackend}");
             AnsiConsole.MarkupLine($"[grey]bbs-node path:[/] {Markup.Escape(cfg.BbsNodePath ?? "<auto>")}");
             AnsiConsole.MarkupLine($"[grey]Data dir:[/] {Markup.Escape(cfg.DataDir)}");
@@ -996,6 +1156,14 @@ public static class InteractiveUi
     private static ClientConfig PromptClientBackendSettings(ClientConfig cfg)
     {
         var backend = AnsiConsole.Ask("Backend base URL", cfg.BackendBaseUrl);
+        var roles = new[] { cfg.BackendRole, "client", "indexer", "archiver", "full" }
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var backendRole = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("Backend role (managed)")
+                .AddChoices(roles)
+        );
         var dataDir = AnsiConsole.Ask("Data dir", cfg.DataDir);
         var startBackend = AnsiConsole.Confirm("Auto-start backend (manage local bbs-node)?", cfg.StartBackend);
 
@@ -1009,6 +1177,7 @@ public static class InteractiveUi
         return cfg with
         {
             BackendBaseUrl = backend,
+            BackendRole = backendRole,
             DataDir = dataDir,
             StartBackend = startBackend,
             BbsNodePath = bbsNodePath,
@@ -1097,6 +1266,7 @@ public static class InteractiveUi
 
         var restartNeeded =
             !string.Equals(oldCfg.BackendBaseUrl, newCfg.BackendBaseUrl, StringComparison.Ordinal) ||
+            !string.Equals(oldCfg.BackendRole, newCfg.BackendRole, StringComparison.Ordinal) ||
             !string.Equals(oldCfg.DataDir, newCfg.DataDir, StringComparison.Ordinal) ||
             !string.Equals(oldCfg.FlexIpfsBaseUrl, newCfg.FlexIpfsBaseUrl, StringComparison.Ordinal) ||
             !string.Equals(oldCfg.FlexIpfsBaseDir, newCfg.FlexIpfsBaseDir, StringComparison.Ordinal) ||
@@ -1136,6 +1306,7 @@ public static class InteractiveUi
             AnsiConsole.Write(new Rule("[bold]Backend control[/]").LeftJustified());
             AnsiConsole.MarkupLine($"[grey]Backend:[/] {Markup.Escape(cfg.BackendBaseUrl)} [{(healthy ? "green" : "red")}]{(healthy ? "up" : "down")}[/]");
             AnsiConsole.MarkupLine($"[grey]Managed by this client:[/] {managed} {(launcher.ManagedPid is int pid ? $"(pid={pid})" : "")}".TrimEnd());
+            AnsiConsole.MarkupLine($"[grey]Backend role (managed):[/] {Markup.Escape(cfg.BackendRole)}");
             AnsiConsole.MarkupLine($"[grey]Auto-start backend:[/] {cfg.StartBackend}");
             AnsiConsole.WriteLine();
 
@@ -1607,6 +1778,59 @@ public static class InteractiveUi
     {
         AnsiConsole.MarkupLine("[grey]Press Enter to continue...[/]");
         Console.ReadLine();
+    }
+
+    private sealed record ProcessOutput(string StdOut, string StdErr, int ExitCode);
+
+    private static async Task<ProcessOutput> RunProcessCaptureAsync(string fileName, IEnumerable<string> args, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = fileName,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = AppContext.BaseDirectory,
+        };
+        foreach (var a in args)
+        {
+            psi.ArgumentList.Add(a);
+        }
+
+        using var p = Process.Start(psi) ?? throw new InvalidOperationException($"failed to start: {Path.GetFileName(fileName)}");
+        var stdoutTask = p.StandardOutput.ReadToEndAsync();
+        var stderrTask = p.StandardError.ReadToEndAsync();
+
+        try
+        {
+            await p.WaitForExitAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            try
+            {
+                if (!p.HasExited)
+                {
+                    p.Kill(entireProcessTree: true);
+                }
+            }
+            catch
+            {
+            }
+            throw;
+        }
+
+        var stdout = await stdoutTask;
+        var stderr = await stderrTask;
+
+        if (p.ExitCode != 0)
+        {
+            var msg = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
+            msg = string.IsNullOrWhiteSpace(msg) ? $"process exited with code {p.ExitCode}" : msg.Trim();
+            throw new InvalidOperationException(msg);
+        }
+
+        return new ProcessOutput(stdout, stderr, p.ExitCode);
     }
 
     private sealed record Choice<T>(string Label, T? Value) where T : class;

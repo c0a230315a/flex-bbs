@@ -53,6 +53,8 @@ GitHub Actions で OS 別の「全部入りバンドル」を作成します。�
 ./bbs-node-linux-amd64 init-board --board-id bbs.general --title General --author-priv-key 'ed25519:...'
 ```
 
+クライアントの TUI からも実行できます: `Browse boards` → `Create board`。
+
 ### クライアント
 
 対話 UI(TUI):
@@ -67,6 +69,8 @@ GitHub Actions で OS 別の「全部入りバンドル」を作成します。�
 クライアントはデフォルトでバックエンドを自動起動します。無効化する場合は `--no-start-backend` または TUI の Settings から変更してください。
 また、TUI の Settings からバックエンドおよび Flexible-IPFS の設定（`flexible-ipfs-base/kadrtt.properties` 含む）を編集できます。
 Windows では `bbs-client.exe` をダブルクリックすると TUI が起動します。
+
+注意: `Search posts` は `bbs-node` の role が `indexer` または `full` の場合のみ利用できます（TUI: Settings → Client / Backend → Backend role）。
 
 ソースから実行する場合は `--bbs-node-path ./backend-go/bbs-node` を指定するか、別で `bbs-node` を起動してください。
 
