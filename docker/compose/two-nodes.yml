@@ -1,0 +1,49 @@
+services:
+  full:
+    build:
+      context: ../..
+      dockerfile: docker/bbs-node/Dockerfile
+    command:
+      - "--role=full"
+      - "--http"
+      - "0.0.0.0:18080"
+      - "--data-dir"
+      - "/data"
+      - "--autostart-flexipfs=true"
+      - "--flexipfs-mdns=false"
+    ports:
+      - "18080:18080"
+    volumes:
+      - full-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:18080/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+  client:
+    build:
+      context: ../..
+      dockerfile: docker/bbs-node/Dockerfile
+    command:
+      - "--role=client"
+      - "--http"
+      - "0.0.0.0:18080"
+      - "--data-dir"
+      - "/data"
+      - "--autostart-flexipfs=true"
+      - "--flexipfs-mdns=false"
+    ports:
+      - "28080:18080"
+    volumes:
+      - client-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:18080/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+volumes:
+  full-data:
+  client-data:
+

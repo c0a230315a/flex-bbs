@@ -1,0 +1,25 @@
+# Git / build outputs
+.git
+.github
+dist
+bundle-*
+
+# Go / .NET build outputs
+backend-go/bbs-node
+backend-go/bbs-node.exe
+src/**/bin
+src/**/obj
+
+# Local runtime data / logs
+logs
+**/*.log
+**/*.tmp
+
+# Flexible-IPFS runtime state (must not be baked into images)
+flexible-ipfs-base/.ipfs
+flexible-ipfs-base/getdata
+flexible-ipfs-base/providers
+
+# Bundled JREs (Docker image installs Java via apt)
+flexible-ipfs-runtime
+

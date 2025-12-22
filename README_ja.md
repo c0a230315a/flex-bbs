@@ -9,7 +9,18 @@
 - `backend-go/` – Go 製バックエンドノード `bbs-node`（`/api/v1` に HTTP API）。
 - `src/BbsClient/` – C# クライアント（CLI + 対話 UI(TUI)）（`dotnet run --project src/BbsClient`）。
 
-## コンパイル版（配布バンドル）の動かし方（1回のダウンロード）
+## 目次
+
+- クイックスタート（配布バンドル）
+  - コマンドで起動（CLI）
+  - TUI で起動（bbs-client）
+- コマンド操作（CLI）
+- TUI 操作（bbs-client ui）
+- Windows 2台（mDNS）TUI スタートアップガイド（FULL/CLIENT + ボード作成）
+- Docker 2ノード疎通テスト（CI/CD）
+- ソースからビルド（WSL / Ubuntu）
+
+## クイックスタート（配布バンドル）
 
 GitHub Actions で OS 別の「全部入りバンドル」を作成します。内容:
 
@@ -24,76 +35,147 @@ GitHub Actions で OS 別の「全部入りバンドル」を作成します。�
    - macOS: `flex-bbs-darwin-amd64.tar.gz`
    `main` から切られるタグは安定版、`develop` から切られるタグは pre‑release として扱われます。
 2. 展開すると `bbs-node-*` と `flexible-ipfs-*` が同じフォルダに入っています。
-3. `bbs-node` を起動します（デフォルトで Flexible‑IPFS を自動起動します）:
-   - Linux / macOS:
-     ```bash
-     ./bbs-node-linux-amd64 --role=client --http 127.0.0.1:8080
-     ```
-   - Windows:
-     ```bat
-     bbs-node-windows-amd64.exe --role=client --http 127.0.0.1:8080
-     ```
-   Flexible‑IPFS を手動で起動したい場合は `--autostart-flexipfs=false` を付けてください。
-4. 動作確認:
-   ```bash
-   curl http://127.0.0.1:8080/healthz
-   ```
+3. 起動方法は 2 通りあります（CLI / TUI）。以下で分けて説明します。
 
-### 板の作成（初回のみ）
+### 1) コマンドで起動（CLI）
 
-鍵を生成:
+`bbs-node` はデフォルトで Flexible‑IPFS を自動起動します（`--autostart-flexipfs=false` で無効化）。
 
-```bash
-./bbs-node-linux-amd64 gen-key
-```
+- Linux / macOS:
+  ```bash
+  ./bbs-node-linux-amd64 --role=client --http 127.0.0.1:8080
+  curl http://127.0.0.1:8080/healthz
+  ```
+- Windows:
+  ```bat
+  bbs-node-windows-amd64.exe --role=client --http 127.0.0.1:8080
+  curl http://127.0.0.1:8080/healthz
+  ```
 
-板を作成・登録（デフォルトでは OS の設定ディレクトリ配下に `boards.json` を作成/更新します）:
+### 2) TUI で起動（bbs-client）
 
-```bash
-./bbs-node-linux-amd64 init-board --board-id bbs.general --title General --author-priv-key 'ed25519:...'
-```
+`bbs-client` はデフォルトでバックエンド（ローカル `bbs-node`）を自動起動して管理します。
 
-クライアントの TUI からも実行できます: `Browse boards` → `Create board`。
+- 起動:
+  - Windows: `bbs-client.exe` をダブルクリック
+  - Linux/macOS: `./bbs-client`（または `./bbs-client ui`）
 
-### クライアント
+## コマンド操作（CLI）
 
-対話 UI(TUI):
+### bbs-node（バックエンド）
 
-```bash
-./bbs-client
+- 鍵生成:
+  ```bash
+  ./bbs-node-linux-amd64 gen-key
+  ```
+- 板の作成（ローカル `boards.json` に登録 + BoardMeta を DHT に保存）:
+  ```bash
+  ./bbs-node-linux-amd64 init-board --board-id bbs.general --title General --author-priv-key 'ed25519:...'
+  ```
+- 既存の板を追加（BoardMeta CID を知っている場合）:
+  ```bash
+  ./bbs-node-linux-amd64 add-board --board-id bbs.general --board-meta-cid bafy...
+  ```
 
-# （任意）明示的にコマンドを指定:
-./bbs-client ui
-```
-
-クライアントはデフォルトでバックエンドを自動起動します。無効化する場合は `--no-start-backend` または TUI の Settings から変更してください。
-また、TUI の Settings からバックエンドおよび Flexible-IPFS の設定を編集できます:
-
-- Settings → Flexible‑IPFS:
-  - `Use mDNS...`（=`--flexipfs-mdns`）
-  - `mDNS discovery timeout (seconds)`（=`--flexipfs-mdns-timeout`）
-  - `ipfs.endpoint override`（=`--flexipfs-gw-endpoint` / `FLEXIPFS_GW_ENDPOINT`）
-- Settings → kadrtt.properties: `flexible-ipfs-base/kadrtt.properties` を直接編集
-
-設定の保存後、クライアントがバックエンドを管理している場合（`Auto-start backend` が有効）は自動で再起動します。
-Windows では `bbs-client.exe` をダブルクリックすると TUI が起動します。
-
-注意: `Search posts` は `bbs-node` の role が `indexer` または `full` の場合のみ利用できます（TUI: Settings → Client / Backend → Backend role）。
-
-ソースから実行する場合は `--bbs-node-path ./backend-go/bbs-node` を指定するか、別で `bbs-node` を起動してください。
-
-UI で複数行テキストを入力する場合は、1 行だけの `.` を入力すると確定します。
-
-CLI 例:
+### bbs-client（CLI モード）
 
 ```bash
 ./bbs-client boards
 ./bbs-client threads bbs.general
 ```
 
-## LAN / 2台構成（ピア接続）
+## TUI 操作（bbs-client ui）
 
-Flexible‑IPFS は `putvaluewithattr` のために **最低 1 つのピア接続**が必要です（`dht/peerlist` 参照）。LAN 上では `ipfs.endpoint` を手動設定するか、mDNS で配布してピアを接続します。
+- 起動: `bbs-client`（Windows は `bbs-client.exe`）
+- メインメニュー:
+  - `Browse boards`（板一覧/作成/追加）
+  - `Keys`（投稿・板作成に使う鍵）
+  - `Settings`（バックエンド role / Flexible‑IPFS 設定）
+- 板の作成: `Browse boards` → `Create board`
+  - 初回は `Keys` メニューで鍵生成（または作成フロー中に生成）します
+  - 作成成功すると `boardMetaCid=...` が表示されます
+- 板の追加: `Browse boards` → `Add board` → `Board ID` と `BoardMeta CID` を入力
+- 重要な設定（Settings）:
+  - `Client / Backend` → `Backend role (managed)` を `client|indexer|archiver|full` から選択
+  - `Flexible-IPFS` → `Use mDNS on LAN...`（mDNS）
+  - `Flexible-IPFS` → `ipfs.endpoint override`（手動でピア接続したい場合）
+
+注意: `Search posts` は `bbs-node` role が `indexer` または `full` の場合のみ利用できます（TUI: `Settings` → `Client / Backend`）。
+
+## Windows 2台（mDNS）TUI スタートアップガイド（FULL / CLIENT + ボード作成）
+
+Flexible‑IPFS は `putvaluewithattr` のために **最低 1 つのピア接続**が必要です。ピア未接続（`dht/peerlist` が `""`）だと `Create board` が失敗します。
+
+この手順では、mDNS で「接続先（gw endpoint）」を LAN に広告し、もう片方が自動で発見して接続します。
+
+### 想定
+
+- PC-A: `full`（インデックス等を持つ側）
+- PC-B: `client`（普段操作する側）
+- 2台は同じ LAN（同一セグメント推奨）
+- ファイアウォール許可:
+  - UDP 5353（mDNS）
+  - TCP 4001（Flex‑IPFS swarm）
+
+### 手順
+
+#### 1) 両 PC で bbs-client を起動
+
+- PC-A/PC-B 共通: `bbs-client.exe` を起動
+
+#### 2) PC-A（FULL）の設定
+
+1. `Settings` → `Client / Backend`
+   - `Backend role (managed)` を `full`
+2. `Settings` → `Flexible-IPFS`
+   - `Use mDNS on LAN to discover flex-ipfs gw endpoint?` を `true`
+   - ここで `ipfs.endpoint override` に **PC-A 自身の endpoint** を設定して「広告側」にします
+
+PC-A の endpoint（例: `/ip4/<AのLAN IP>/tcp/4001/ipfs/<PeerID>`）は、PowerShell で取得できます:
+
+```powershell
+# PeerID を取得
+$peer = (curl.exe -X POST http://127.0.0.1:5001/api/v0/id | ConvertFrom-Json).ID
+# A の LAN IP を自分で確認して入れる（例: 192.168.0.10）
+$ip = "192.168.0.10"
+"/ip4/$ip/tcp/4001/ipfs/$peer"
+```
+
+出てきた文字列を TUI の `ipfs.endpoint override` に貼り付けて保存します（保存後、バックエンドは自動再起動されます）。
+
+#### 3) PC-B（CLIENT）の設定
+
+1. `Settings` → `Client / Backend`
+   - `Backend role (managed)` を `client`
+2. `Settings` → `Flexible-IPFS`
+   - `Use mDNS...` を `true`
+   - `ipfs.endpoint override` は **空（none）** のまま
+
+これで PC-B 側が mDNS で PC-A の endpoint を発見し、Flex‑IPFS がピア接続します。
+
+（疎通確認したい場合）
+
+```powershell
+curl.exe -X POST http://127.0.0.1:5001/api/v0/dht/peerlist
+```
+
+`""` 以外になれば OK です。
+
+#### 4) ボード作成 → 共有（Add board）
+
+1. PC-B: `Browse boards` → `Create board`
+   - `Board ID` と `Title` を入力して作成
+   - 成功すると `boardMetaCid=...` が表示されます
+2. PC-A: `Browse boards` → `Add board`
+   - PC-B で作った `Board ID` と `BoardMeta CID` を入力して登録
+
+これで PC-A（full）側でもボードを開けるようになります。
+
+補足: `boards.json` は各 PC のローカル管理なので、ボードを共有したい場合は相手側で `Add board` が必要です。
+
+## LAN / 2台構成（ピア接続: CLI 手動設定）
+
+LAN 上では `ipfs.endpoint` を手動設定するか、上記のように mDNS で配布してピアを接続します。
 
 1. A 端末で `bbs-node` を `indexer` または `full` で起動します。
 2. A 端末で PeerID を取得します:
@@ -109,7 +191,25 @@ Flexible‑IPFS は `putvaluewithattr` のために **最低 1 つのピア接�
 5. 接続確認:
    - `curl -X POST http://127.0.0.1:5001/api/v0/dht/peerlist` が `""` 以外になれば OK
 
-## ビルド版（git clone したソース）での環境構築と動かし方（WSL）
+## Docker 2ノード疎通テスト（CI/CD）
+
+`FULL` と `CLIENT` の 2 ノードを Docker で立ち上げ、ピア接続（`peerlist`）とボード作成までを自動で確認します。
+
+- Compose: `docker/compose/two-nodes.yml`
+- テストスクリプト: `scripts/ci/docker-two-node-test.sh`
+- GitHub Actions: `.github/workflows/docker-two-node-test.yml`
+
+ローカルで実行する場合:
+
+```bash
+# Compose v2:
+docker compose -f docker/compose/two-nodes.yml up -d --build
+# (or Compose v1):
+docker-compose -f docker/compose/two-nodes.yml up -d --build
+bash scripts/ci/docker-two-node-test.sh
+```
+
+## ソースからビルド（WSL / Ubuntu）
 
 ### 前提
 

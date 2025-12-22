@@ -9,6 +9,17 @@ This repo currently contains:
 - `backend-go/` – Go backend node `bbs-node` (HTTP API under `/api/v1`).
 - `src/BbsClient/` – C# client (CLI + interactive TUI) (`dotnet run --project src/BbsClient`).
 
+## Contents
+
+- Quickstart (prebuilt bundle)
+  - Start via CLI (`bbs-node`)
+  - Start via TUI (`bbs-client`)
+- CLI usage (commands)
+- TUI usage (interactive)
+- Windows 2-PC TUI guide (mDNS, FULL/CLIENT, create board)
+- Docker 2-node integration test (CI)
+- Build from source
+
 ## Prebuilt bundle (one download)
 
 GitHub Actions builds OS‑specific bundles that include everything needed:
@@ -24,72 +35,63 @@ GitHub Actions builds OS‑specific bundles that include everything needed:
    - macOS: `flex-bbs-darwin-amd64.tar.gz`
    Releases tagged from `main` are stable; tags from `develop` are marked as pre‑releases.
 2. Extract it. The folder contains `bbs-node-*` plus `flexible-ipfs-*` directories.
-3. Run `bbs-node` (it autostarts Flexible‑IPFS by default):
-   - Linux / macOS:
-     ```bash
-     ./bbs-node-linux-amd64 --role=client --http 127.0.0.1:8080
-     ```
-   - Windows:
-     ```bat
-     bbs-node-windows-amd64.exe --role=client --http 127.0.0.1:8080
-     ```
-   If you want to start Flexible‑IPFS yourself, add `--autostart-flexipfs=false`.
-4. Sanity check:
-   ```bash
-   curl http://127.0.0.1:8080/healthz
-   ```
+3. Start via **CLI** or **TUI** (documented separately below).
 
-### Initialize a board (first time)
+### Start via CLI (`bbs-node`)
 
-Generate a key pair:
+`bbs-node` autostarts Flexible‑IPFS by default (`--autostart-flexipfs=false` to disable).
 
-```bash
-./bbs-node-linux-amd64 gen-key
-```
+- Linux / macOS:
+  ```bash
+  ./bbs-node-linux-amd64 --role=client --http 127.0.0.1:8080
+  curl http://127.0.0.1:8080/healthz
+  ```
+- Windows:
+  ```bat
+  bbs-node-windows-amd64.exe --role=client --http 127.0.0.1:8080
+  curl http://127.0.0.1:8080/healthz
+  ```
 
-Then create/register a board (writes `boards.json` under your OS config dir by default):
+### Start via TUI (`bbs-client`)
 
-```bash
-./bbs-node-linux-amd64 init-board --board-id bbs.general --title General --author-priv-key 'ed25519:...'
-```
+- Windows: double-click `bbs-client.exe`
+- Linux/macOS: `./bbs-client` (or `./bbs-client ui`)
 
-You can also do this from the client TUI: `Browse boards` → `Create board`.
+## CLI usage (commands)
 
-### Use the client
+### `bbs-node`
 
-Interactive UI (TUI):
+- Generate a key pair:
+  ```bash
+  ./bbs-node-linux-amd64 gen-key
+  ```
+- Create/register a board (updates local `boards.json` and stores BoardMeta in the DHT):
+  ```bash
+  ./bbs-node-linux-amd64 init-board --board-id bbs.general --title General --author-priv-key 'ed25519:...'
+  ```
+- Register an existing board (when you know its BoardMeta CID):
+  ```bash
+  ./bbs-node-linux-amd64 add-board --board-id bbs.general --board-meta-cid bafy...
+  ```
 
-```bash
-./bbs-client
-
-# (optional) explicit command:
-./bbs-client ui
-```
-
-The client auto-starts the backend by default; disable with `--no-start-backend` or via the TUI Settings menu.
-The TUI Settings menu can also edit backend and Flexible-IPFS settings:
-
-- Settings → Flexible-IPFS:
-  - `Use mDNS...` (= `--flexipfs-mdns`)
-  - `mDNS discovery timeout (seconds)` (= `--flexipfs-mdns-timeout`)
-  - `ipfs.endpoint override` (= `--flexipfs-gw-endpoint` / `FLEXIPFS_GW_ENDPOINT`)
-- Settings → kadrtt.properties: edit the raw `flexible-ipfs-base/kadrtt.properties`
-
-After saving settings, the client restarts the managed backend automatically (if `Auto-start backend` is enabled).
-On Windows, double-click `bbs-client.exe` to open the TUI.
-
-Note: `Search posts` requires `bbs-node` role `indexer` or `full` (TUI: Settings → Client / Backend → Backend role).
-
-When running from source, pass `--bbs-node-path ./backend-go/bbs-node` (or start `bbs-node` yourself).
-
-When entering multi-line text in the UI, finish with a single `.` line.
-
-CLI examples:
+### `bbs-client` (CLI mode)
 
 ```bash
 ./bbs-client boards
 ./bbs-client threads bbs.general
 ```
+
+## TUI usage (interactive)
+
+- Main menu: `Browse boards` / `Search posts` / `Keys` / `Blocked` / `Settings`
+- Create board: `Browse boards` → `Create board`
+- Add board: `Browse boards` → `Add board` (enter `Board ID` + `BoardMeta CID`)
+- Settings highlights:
+  - `Client / Backend` → `Backend role (managed)` (`client|indexer|archiver|full`)
+  - `Flexible-IPFS` → `Use mDNS on LAN...`
+  - `Flexible-IPFS` → `ipfs.endpoint override` (manual peer connection)
+
+Note: `Search posts` requires backend role `indexer` or `full`.
 
 ## LAN / 2-machine setup (peer connectivity)
 
@@ -108,6 +110,54 @@ Flexible‑IPFS needs at least 1 peer connection (see `dht/peerlist`). On a LAN,
    - Discoverer: run with `--flexipfs-mdns=true` and leave the gw endpoint blank
 5. Verify peers:
    - `curl -X POST http://127.0.0.1:5001/api/v0/dht/peerlist` should be non-empty (not `""`)
+
+## Windows 2-PC TUI guide (mDNS, FULL/CLIENT, create board)
+
+Flexible‑IPFS needs at least 1 peer connection. If `dht/peerlist` returns `""`, flows like `Create board` will fail.
+
+**Assumptions**
+
+- PC-A runs `full`, PC-B runs `client`
+- Same LAN
+- Firewall allows UDP 5353 (mDNS) and TCP 4001 (Flex‑IPFS swarm)
+
+**Steps**
+
+1. On both PCs, extract the Windows bundle and launch `bbs-client.exe`.
+2. On PC-A: `Settings` → `Client / Backend` → set `Backend role (managed)` to `full`.
+3. On PC-A: compute your endpoint and set it in `Settings` → `Flexible-IPFS`:
+   - Enable `Use mDNS...`
+   - Set `ipfs.endpoint override` to your own endpoint (`/ip4/<A_LAN_IP>/tcp/4001/ipfs/<PeerID>`)
+   - Get `<PeerID>` (PowerShell):
+     ```powershell
+     (curl.exe -X POST http://127.0.0.1:5001/api/v0/id | ConvertFrom-Json).ID
+     ```
+4. On PC-B: `Settings` → `Flexible-IPFS`:
+   - Enable `Use mDNS...`
+   - Leave `ipfs.endpoint override` empty
+5. Create and share a board:
+   - PC-B: `Browse boards` → `Create board` → note `boardMetaCid=...`
+   - PC-A: `Browse boards` → `Add board` → input `Board ID` + `BoardMeta CID`
+
+Note: boards are registered locally (`boards.json`), so sharing requires `Add board` on the other machine.
+
+## Docker 2-node integration test (CI)
+
+Starts 2 containers (`full` + `client`), connects Flex‑IPFS peers (`peerlist`), creates a board, and verifies the board can be loaded from the other node.
+
+- Compose: `docker/compose/two-nodes.yml`
+- Script: `scripts/ci/docker-two-node-test.sh`
+- GitHub Actions: `.github/workflows/docker-two-node-test.yml`
+
+Run locally:
+
+```bash
+# Compose v2:
+docker compose -f docker/compose/two-nodes.yml up -d --build
+# (or Compose v1):
+docker-compose -f docker/compose/two-nodes.yml up -d --build
+bash scripts/ci/docker-two-node-test.sh
+```
 
 ## Build from source (WSL / Ubuntu)
 
