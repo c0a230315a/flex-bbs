@@ -89,22 +89,52 @@ func (c *Client) PutValueWithAttr(ctx context.Context, value string, attrs, tags
 		q.Set("tags", strings.Join(tags, ","))
 	}
 
-	body, status, header, trailer, err := c.postQuery(ctx, "/dht/putvaluewithattr", q)
-	if err != nil {
-		return "", err
+	retryUntil := time.Now().Add(30 * time.Second)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(retryUntil) {
+		retryUntil = dl
 	}
-	if status < 200 || status >= 300 {
+
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		body, status, header, trailer, err := c.postQuery(ctx, "/dht/putvaluewithattr", q)
+		if err != nil {
+			return "", err
+		}
+		if status >= 200 && status < 300 {
+			return extractCID(body)
+		}
+
 		httpErr := httpError(status, body, header, trailer)
 		if status == http.StatusBadRequest && len(bytes.TrimSpace(body)) == 0 {
-			// Flexible-IPFS can return HTTP 400 with an empty body when it has no peers.
+			// Flexible-IPFS can return HTTP 400 with an empty body when it's still bootstrapping.
+			// It's also known to crash on put when its peer list is empty; fail fast in that case.
 			if peers, perr := c.PeerList(ctx); perr == nil && strings.TrimSpace(peers) == "" {
 				return "", fmt.Errorf("flexipfs put failed: no peers connected (peerlist is empty). Configure a gw endpoint via FLEXIPFS_GW_ENDPOINT / --flexipfs-gw-endpoint or enable --flexipfs-mdns: %w", httpErr)
 			}
-			return "", fmt.Errorf("flexipfs put failed: http 400 with empty body (check flex-ipfs.log): %w", httpErr)
+
+			lastErr = fmt.Errorf("flexipfs put failed: http 400 with empty body (check flex-ipfs.log): %w", httpErr)
+			if time.Now().After(retryUntil) {
+				return "", fmt.Errorf("flexipfs put failed after %d attempts: %w", attempt+1, lastErr)
+			}
+
+			// Backoff (fast in tests, capped in production).
+			sleep := time.Duration(50*(attempt+1)) * time.Millisecond
+			if sleep > time.Second {
+				sleep = time.Second
+			}
+			select {
+			case <-ctx.Done():
+				if lastErr != nil {
+					return "", fmt.Errorf("flexipfs put aborted: %w", lastErr)
+				}
+				return "", ctx.Err()
+			case <-time.After(sleep):
+			}
+			continue
 		}
+
 		return "", httpErr
 	}
-	return extractCID(body)
 }
 
 func (c *Client) GetValue(ctx context.Context, cid string) ([]byte, error) {
@@ -250,25 +280,47 @@ func httpError(status int, body []byte, header http.Header, trailer http.Header)
 	if msg == "" && header != nil {
 		// Flexible-IPFS sometimes reports errors in the *Trailer header value* (not the trailer section).
 		// Example: Trailer: Attribute+info.+should+be%3A+name_value
-		if v := strings.TrimSpace(header.Get("Trailer")); v != "" {
+		for _, raw := range header.Values("Trailer") {
+			v := strings.TrimSpace(raw)
+			if v == "" {
+				continue
+			}
 			if decoded, err := url.QueryUnescape(v); err == nil && strings.TrimSpace(decoded) != "" {
 				v = decoded
 			}
 			msg = strings.TrimSpace(v)
+			break
 		}
 	}
 	if msg == "" && len(trailer) > 0 {
+		// Go may parse the (misused) "Trailer" header value as *trailer key names* and drop the header,
+		// leaving `trailer` with keys but no values. In that case, treat the keys as the message.
 		var parts []string
-		for k := range trailer {
-			for _, v := range trailer.Values(k) {
+		var keys []string
+		for k, vals := range trailer {
+			if len(vals) == 0 {
+				keys = append(keys, k)
+				continue
+			}
+			for _, v := range vals {
 				if decoded, err := url.QueryUnescape(v); err == nil && strings.TrimSpace(decoded) != "" {
 					v = decoded
 				}
 				parts = append(parts, fmt.Sprintf("%s: %s", k, v))
 			}
 		}
-		sort.Strings(parts)
-		msg = strings.Join(parts, "; ")
+		if len(parts) > 0 {
+			sort.Strings(parts)
+			msg = strings.Join(parts, "; ")
+		} else if len(keys) > 0 {
+			sort.Strings(keys)
+			for i := range keys {
+				if decoded, err := url.QueryUnescape(keys[i]); err == nil && strings.TrimSpace(decoded) != "" {
+					keys[i] = decoded
+				}
+			}
+			msg = strings.Join(keys, "; ")
+		}
 	}
 	if msg == "" {
 		msg = "empty response"

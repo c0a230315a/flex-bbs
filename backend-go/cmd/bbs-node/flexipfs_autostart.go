@@ -423,6 +423,10 @@ func flexIPFSSwarmConnect(ctx context.Context, baseURL, addr string) error {
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
+	// Flexible-IPFS (ipfs-ncl.jar) doesn't implement /swarm/connect; ignore.
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
 	msg := strings.TrimSpace(string(body))
 	if msg == "" {
 		msg = resp.Status

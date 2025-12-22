@@ -30,6 +30,12 @@ dump_debug() {
   echo >&2
   echo "== docker compose logs (full, client) ==" >&2
   dc logs --no-color full client >&2 || true
+  echo >&2
+  echo "== flex-ipfs logs (/data/logs/flex-ipfs.log) ==" >&2
+  for svc in full client; do
+    echo "-- ${svc} --" >&2
+    dc exec -T "${svc}" sh -lc 'test -f /data/logs/flex-ipfs.log && tail -n 200 /data/logs/flex-ipfs.log || echo "no /data/logs/flex-ipfs.log"' >&2 || true
+  done
 }
 
 cleanup() {
@@ -163,13 +169,35 @@ if [[ "${full_peerlist}" != *"${client_peer}"* || "${client_peerlist}" != *"${fu
   exit 1
 fi
 
+echo "Warming up DHT putvaluewithattr on client..." >&2
+for _ in {1..60}; do
+  if dc exec -T client curl -fsS -X POST "http://127.0.0.1:5001/api/v0/dht/putvaluewithattr?value=ping&attrs=ci_1&tags=ci_test" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+dc exec -T client curl -fsS -X POST "http://127.0.0.1:5001/api/v0/dht/putvaluewithattr?value=ping&attrs=ci_1&tags=ci_test" >/dev/null
+
 echo "Creating board on client..." >&2
 key_json="$(dc exec -T client /app/bbs-node gen-key)"
 author_priv="$(printf '%s' "${key_json}" | json_get priv)"
 
 board_id="bbs.ci.$(date +%s)"
 board_title="CI Board"
-board_cid="$(dc exec -T client /app/bbs-node init-board --board-id "${board_id}" --title "${board_title}" --author-priv-key "${author_priv}" --data-dir /data --autostart-flexipfs=false | tr -d '\r' | tail -n1)"
+board_cid=""
+for attempt in {1..5}; do
+  set +e
+  out="$(dc exec -T client /app/bbs-node init-board --board-id "${board_id}" --title "${board_title}" --author-priv-key "${author_priv}" --data-dir /data --autostart-flexipfs=false 2>&1)"
+  code="$?"
+  set -e
+  if [[ "${code}" -eq 0 ]]; then
+    board_cid="$(printf '%s' "${out}" | tr -d '\r' | tail -n1)"
+    break
+  fi
+  echo "init-board failed (attempt ${attempt}/5), retrying..." >&2
+  echo "${out}" >&2
+  sleep 2
+done
 if [[ -z "${board_cid}" ]]; then
   echo "boardMeta CID not returned" >&2
   exit 1
