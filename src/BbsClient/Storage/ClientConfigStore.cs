@@ -48,6 +48,8 @@ public sealed class ClientConfigStore
 
 public sealed record ClientConfig
 {
+    private const int DefaultFlexIpfsMdnsTimeoutSeconds = 10;
+
     public string BackendBaseUrl { get; init; } = "http://127.0.0.1:8080";
     public string BackendRole { get; init; } = "indexer";
     public string DataDir { get; init; } = ConfigPaths.DefaultAppDir();
@@ -59,6 +61,7 @@ public sealed record ClientConfig
     public string? FlexIpfsGwEndpoint { get; init; }
     public bool AutostartFlexIpfs { get; init; } = true;
     public bool FlexIpfsMdns { get; init; } = false;
+    public int FlexIpfsMdnsTimeoutSeconds { get; init; } = DefaultFlexIpfsMdnsTimeoutSeconds;
 
     public ClientConfig Normalize()
     {
@@ -70,6 +73,7 @@ public sealed record ClientConfig
         var flexIpfsBaseUrl = string.IsNullOrWhiteSpace(FlexIpfsBaseUrl) ? "http://127.0.0.1:5001/api/v0" : FlexIpfsBaseUrl.Trim();
         var flexIpfsBaseDir = string.IsNullOrWhiteSpace(FlexIpfsBaseDir) ? null : FlexIpfsBaseDir.Trim();
         var flexIpfsGwEndpoint = string.IsNullOrWhiteSpace(FlexIpfsGwEndpoint) ? null : FlexIpfsGwEndpoint.Trim();
+        var flexIpfsMdnsTimeoutSeconds = FlexIpfsMdnsTimeoutSeconds <= 0 ? DefaultFlexIpfsMdnsTimeoutSeconds : FlexIpfsMdnsTimeoutSeconds;
 
         return this with
         {
@@ -80,6 +84,7 @@ public sealed record ClientConfig
             FlexIpfsBaseUrl = flexIpfsBaseUrl,
             FlexIpfsBaseDir = flexIpfsBaseDir,
             FlexIpfsGwEndpoint = flexIpfsGwEndpoint,
+            FlexIpfsMdnsTimeoutSeconds = flexIpfsMdnsTimeoutSeconds,
         };
     }
 

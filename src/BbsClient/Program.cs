@@ -36,6 +36,7 @@ var autostartFlexIpfs = GetBoolOption(args, "--autostart-flexipfs")
                         ?? (HasFlag(args, "--no-autostart-flexipfs") ? false : persistedConfig.AutostartFlexIpfs);
 var flexIpfsMdns = GetBoolOption(args, "--flexipfs-mdns")
                    ?? (HasFlag(args, "--no-flexipfs-mdns") ? false : persistedConfig.FlexIpfsMdns);
+var flexIpfsMdnsTimeoutSeconds = TryParseDurationSeconds(GetOption(args, "--flexipfs-mdns-timeout")) ?? persistedConfig.FlexIpfsMdnsTimeoutSeconds;
 
 var effectiveConfig = persistedConfig with
 {
@@ -48,6 +49,7 @@ var effectiveConfig = persistedConfig with
     FlexIpfsGwEndpoint = flexIpfsGwEndpoint,
     AutostartFlexIpfs = autostartFlexIpfs,
     FlexIpfsMdns = flexIpfsMdns,
+    FlexIpfsMdnsTimeoutSeconds = flexIpfsMdnsTimeoutSeconds,
 };
 effectiveConfig = effectiveConfig.Normalize();
 backend = effectiveConfig.BackendBaseUrl;
@@ -58,7 +60,7 @@ bbsNodePath = effectiveConfig.BbsNodePath;
 AppLog.Init(dataDir);
 AppDomain.CurrentDomain.ProcessExit += (_, _) => AppLog.Close();
 AppLog.Info(
-    $"config backend={backend} role={effectiveConfig.BackendRole} dataDir={dataDir} startBackend={startBackend} bbsNodePath={(bbsNodePath ?? "<auto>")} flexBaseUrl={effectiveConfig.FlexIpfsBaseUrl} autostartFlex={effectiveConfig.AutostartFlexIpfs} mdns={effectiveConfig.FlexIpfsMdns} gwOverride={(string.IsNullOrWhiteSpace(effectiveConfig.FlexIpfsGwEndpoint) ? "<none>" : effectiveConfig.FlexIpfsGwEndpoint)}"
+    $"config backend={backend} role={effectiveConfig.BackendRole} dataDir={dataDir} startBackend={startBackend} bbsNodePath={(bbsNodePath ?? "<auto>")} flexBaseUrl={effectiveConfig.FlexIpfsBaseUrl} autostartFlex={effectiveConfig.AutostartFlexIpfs} mdns={effectiveConfig.FlexIpfsMdns} mdnsTimeout={effectiveConfig.FlexIpfsMdnsTimeoutSeconds}s gwOverride={(string.IsNullOrWhiteSpace(effectiveConfig.FlexIpfsGwEndpoint) ? "<none>" : effectiveConfig.FlexIpfsGwEndpoint)}"
 );
 
 using var launcher = new BackendLauncher();
@@ -514,7 +516,31 @@ static int FindCommandIndex(string[] args)
 static bool OptionTakesValue(string name)
 {
     return name is "--backend" or "--data-dir" or "--bbs-node-path"
-        or "--flexipfs-base-url" or "--flexipfs-base-dir" or "--flexipfs-gw-endpoint";
+        or "--flexipfs-base-url" or "--flexipfs-base-dir" or "--flexipfs-gw-endpoint" or "--flexipfs-mdns-timeout";
+}
+
+static int? TryParseDurationSeconds(string? s)
+{
+    s = s?.Trim();
+    if (string.IsNullOrWhiteSpace(s))
+    {
+        return null;
+    }
+
+    if (s.EndsWith("s", StringComparison.OrdinalIgnoreCase) && int.TryParse(s[..^1], out var sec))
+    {
+        return sec;
+    }
+    if (int.TryParse(s, out sec))
+    {
+        return sec;
+    }
+
+    if (TimeSpan.TryParse(s, out var ts))
+    {
+        return (int)Math.Ceiling(ts.TotalSeconds);
+    }
+    return null;
 }
 
 static void PrintHelp()
@@ -533,6 +559,7 @@ static void PrintHelp()
     Console.WriteLine("  --autostart-flexipfs=<bool>   (default: true)");
     Console.WriteLine("  --no-autostart-flexipfs       (disable flex-ipfs autostart)");
     Console.WriteLine("  --flexipfs-mdns=<bool>        (default: false; discover gw endpoint via mDNS)");
+    Console.WriteLine("  --flexipfs-mdns-timeout <val> (default: 10s; e.g. 10s, 30, 00:00:30)");
     Console.WriteLine("  --no-flexipfs-mdns            (disable mDNS discovery)");
     Console.WriteLine();
     Console.WriteLine("Commands:");

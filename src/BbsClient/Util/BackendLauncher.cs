@@ -195,14 +195,29 @@ public sealed class BackendLauncher : IDisposable
 
     private static TimeSpan ComputeStartupTimeout(string[] bbsNodeArgs)
     {
+        var timeout = TimeSpan.FromSeconds(15);
+
         // bbs-node may block startup while waiting for flex-ipfs autostart (up to ~20s).
         var autostartFlex = GetBoolArg(bbsNodeArgs, "--autostart-flexipfs");
         var flexBaseUrl = TryGetArgValue(bbsNodeArgs, "--flexipfs-base-url");
         if (autostartFlex == true && BbsNodeArgsBuilder.IsLocalBaseUrl(flexBaseUrl ?? ""))
         {
-            return TimeSpan.FromSeconds(45);
+            timeout += TimeSpan.FromSeconds(30);
         }
-        return TimeSpan.FromSeconds(15);
+
+        // flex-ipfs gw endpoint resolution can block on mDNS discovery.
+        var mdnsEnabled = GetBoolArg(bbsNodeArgs, "--flexipfs-mdns") == true;
+        var gwEndpoint = TryGetArgValue(bbsNodeArgs, "--flexipfs-gw-endpoint");
+        if (mdnsEnabled && string.IsNullOrWhiteSpace(gwEndpoint))
+        {
+            var mdnsTimeout = TryParseDurationSeconds(TryGetArgValue(bbsNodeArgs, "--flexipfs-mdns-timeout")) ?? 10;
+            if (mdnsTimeout > 0)
+            {
+                timeout += TimeSpan.FromSeconds(mdnsTimeout + 5);
+            }
+        }
+
+        return timeout;
     }
 
     private static bool? GetBoolArg(string[] args, string name)
@@ -249,6 +264,35 @@ public sealed class BackendLauncher : IDisposable
                 return a[(name.Length + 1)..];
             }
         }
+        return null;
+    }
+
+    private static int? TryParseDurationSeconds(string? s)
+    {
+        s = s?.Trim();
+        if (string.IsNullOrWhiteSpace(s))
+        {
+            return null;
+        }
+
+        if (s.EndsWith("s", StringComparison.OrdinalIgnoreCase))
+        {
+            if (int.TryParse(s[..^1], out var sec))
+            {
+                return sec;
+            }
+        }
+
+        if (int.TryParse(s, out var rawSeconds))
+        {
+            return rawSeconds;
+        }
+
+        if (TimeSpan.TryParse(s, out var ts))
+        {
+            return (int)Math.Ceiling(ts.TotalSeconds);
+        }
+
         return null;
     }
 

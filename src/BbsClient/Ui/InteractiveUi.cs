@@ -265,6 +265,7 @@ public static class InteractiveUi
             "--flexipfs-base-url", cfg.FlexIpfsBaseUrl,
             $"--autostart-flexipfs={cfg.AutostartFlexIpfs.ToString().ToLowerInvariant()}",
             $"--flexipfs-mdns={cfg.FlexIpfsMdns.ToString().ToLowerInvariant()}",
+            "--flexipfs-mdns-timeout", $"{cfg.FlexIpfsMdnsTimeoutSeconds}s",
             "--data-dir", cfg.DataDir,
         };
         if (!string.IsNullOrWhiteSpace(cfg.FlexIpfsBaseDir))
@@ -1134,6 +1135,8 @@ public static class InteractiveUi
             AnsiConsole.MarkupLine($"[grey]Flex-IPFS base URL:[/] {Markup.Escape(cfg.FlexIpfsBaseUrl)}");
             AnsiConsole.MarkupLine($"[grey]Flex-IPFS base dir:[/] {Markup.Escape(cfg.FlexIpfsBaseDir ?? "<auto>")}");
             AnsiConsole.MarkupLine($"[grey]Flex-IPFS GW endpoint override:[/] {Markup.Escape(cfg.FlexIpfsGwEndpoint ?? "<none>")}");
+            AnsiConsole.MarkupLine($"[grey]Flex-IPFS mDNS:[/] {cfg.FlexIpfsMdns}");
+            AnsiConsole.MarkupLine($"[grey]Flex-IPFS mDNS timeout:[/] {cfg.FlexIpfsMdnsTimeoutSeconds}s");
             AnsiConsole.MarkupLine($"[grey]Autostart flex-ipfs:[/] {cfg.AutostartFlexIpfs}");
             AnsiConsole.WriteLine();
 
@@ -1212,6 +1215,11 @@ public static class InteractiveUi
         var flexBaseUrl = AnsiConsole.Ask("Flexible-IPFS HTTP API base URL", cfg.FlexIpfsBaseUrl);
         var autostartFlexIpfs = AnsiConsole.Confirm("Autostart Flexible-IPFS (when managed by bbs-node)?", cfg.AutostartFlexIpfs);
         var flexIpfsMdns = AnsiConsole.Confirm("Use mDNS on LAN to discover flex-ipfs gw endpoint?", cfg.FlexIpfsMdns);
+        var flexIpfsMdnsTimeoutSeconds = AnsiConsole.Prompt(
+            new TextPrompt<int>("mDNS discovery timeout (seconds)")
+                .DefaultValue(cfg.FlexIpfsMdnsTimeoutSeconds)
+                .Validate(v => v >= 1 ? ValidationResult.Success() : ValidationResult.Error("timeout must be >= 1"))
+        );
 
         var currentBaseDir = cfg.FlexIpfsBaseDir ?? "<auto>";
         var baseDirInput = AnsiConsole.Prompt(
@@ -1232,6 +1240,7 @@ public static class InteractiveUi
             FlexIpfsBaseUrl = flexBaseUrl,
             AutostartFlexIpfs = autostartFlexIpfs,
             FlexIpfsMdns = flexIpfsMdns,
+            FlexIpfsMdnsTimeoutSeconds = flexIpfsMdnsTimeoutSeconds,
             FlexIpfsBaseDir = baseDir,
             FlexIpfsGwEndpoint = gw,
         };
@@ -1297,6 +1306,7 @@ public static class InteractiveUi
             !string.Equals(oldCfg.FlexIpfsBaseDir, newCfg.FlexIpfsBaseDir, StringComparison.Ordinal) ||
             !string.Equals(oldCfg.FlexIpfsGwEndpoint, newCfg.FlexIpfsGwEndpoint, StringComparison.Ordinal) ||
             oldCfg.FlexIpfsMdns != newCfg.FlexIpfsMdns ||
+            oldCfg.FlexIpfsMdnsTimeoutSeconds != newCfg.FlexIpfsMdnsTimeoutSeconds ||
             oldCfg.AutostartFlexIpfs != newCfg.AutostartFlexIpfs;
 
         if (restartNeeded)

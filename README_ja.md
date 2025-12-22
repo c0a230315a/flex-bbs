@@ -67,7 +67,15 @@ GitHub Actions で OS 別の「全部入りバンドル」を作成します。�
 ```
 
 クライアントはデフォルトでバックエンドを自動起動します。無効化する場合は `--no-start-backend` または TUI の Settings から変更してください。
-また、TUI の Settings からバックエンドおよび Flexible-IPFS の設定（`flexible-ipfs-base/kadrtt.properties` 含む）を編集できます。
+また、TUI の Settings からバックエンドおよび Flexible-IPFS の設定を編集できます:
+
+- Settings → Flexible‑IPFS:
+  - `Use mDNS...`（=`--flexipfs-mdns`）
+  - `mDNS discovery timeout (seconds)`（=`--flexipfs-mdns-timeout`）
+  - `ipfs.endpoint override`（=`--flexipfs-gw-endpoint` / `FLEXIPFS_GW_ENDPOINT`）
+- Settings → kadrtt.properties: `flexible-ipfs-base/kadrtt.properties` を直接編集
+
+設定の保存後、クライアントがバックエンドを管理している場合（`Auto-start backend` が有効）は自動で再起動します。
 Windows では `bbs-client.exe` をダブルクリックすると TUI が起動します。
 
 注意: `Search posts` は `bbs-node` の role が `indexer` または `full` の場合のみ利用できます（TUI: Settings → Client / Backend → Backend role）。

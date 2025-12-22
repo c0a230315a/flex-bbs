@@ -67,7 +67,15 @@ Interactive UI (TUI):
 ```
 
 The client auto-starts the backend by default; disable with `--no-start-backend` or via the TUI Settings menu.
-The TUI Settings menu can also edit backend and Flexible-IPFS settings (including `flexible-ipfs-base/kadrtt.properties`).
+The TUI Settings menu can also edit backend and Flexible-IPFS settings:
+
+- Settings → Flexible-IPFS:
+  - `Use mDNS...` (= `--flexipfs-mdns`)
+  - `mDNS discovery timeout (seconds)` (= `--flexipfs-mdns-timeout`)
+  - `ipfs.endpoint override` (= `--flexipfs-gw-endpoint` / `FLEXIPFS_GW_ENDPOINT`)
+- Settings → kadrtt.properties: edit the raw `flexible-ipfs-base/kadrtt.properties`
+
+After saving settings, the client restarts the managed backend automatically (if `Auto-start backend` is enabled).
 On Windows, double-click `bbs-client.exe` to open the TUI.
 
 Note: `Search posts` requires `bbs-node` role `indexer` or `full` (TUI: Settings → Client / Backend → Backend role).
