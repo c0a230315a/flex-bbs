@@ -22,7 +22,6 @@ type BoardsStore struct {
 
 	mu     sync.Mutex
 	byID   map[string]string
-	loaded bool
 }
 
 func NewBoardsStore(path string) *BoardsStore {
@@ -36,24 +35,23 @@ func (s *BoardsStore) Load() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.loaded {
-		return nil
-	}
-
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
 	}
 
 	b, err := os.ReadFile(s.path)
 	if os.IsNotExist(err) {
-		s.loaded = true
+		s.byID = make(map[string]string)
 		return s.saveLocked()
 	}
 	if err != nil {
 		return err
 	}
+
+	// Always re-load from disk (boards.json can be updated by other processes,
+	// e.g. `bbs-node init-board` from the TUI).
+	s.byID = make(map[string]string)
 	if len(b) == 0 {
-		s.loaded = true
 		return nil
 	}
 
@@ -67,7 +65,6 @@ func (s *BoardsStore) Load() error {
 		}
 		s.byID[br.BoardID] = br.BoardMetaCID
 	}
-	s.loaded = true
 	return nil
 }
 
@@ -94,7 +91,6 @@ func (s *BoardsStore) Upsert(boardID, boardMetaCID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.byID[boardID] = boardMetaCID
-	s.loaded = true
 	return s.saveLocked()
 }
 

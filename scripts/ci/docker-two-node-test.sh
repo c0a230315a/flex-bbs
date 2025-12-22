@@ -44,7 +44,7 @@ wait_http_ok() {
   local tries="${2:-60}"
   local wait_s="${3:-1}"
   for ((i=1; i<=tries; i++)); do
-    if curl -fsS "${url}" >/dev/null; then
+    if curl -fsS "${url}" >/dev/null 2>&1; then
       return 0
     fi
     sleep "${wait_s}"
@@ -58,17 +58,13 @@ wait_flexipfs_api() {
   local tries="${2:-90}"
   local wait_s="${3:-1}"
   for ((i=1; i<=tries; i++)); do
-    if dc exec -T "${svc}" curl -fsS -X POST "http://127.0.0.1:5001/api/v0/id" >/dev/null; then
+    if dc exec -T "${svc}" curl -fsS -X POST "http://127.0.0.1:5001/api/v0/id" >/dev/null 2>&1; then
       return 0
     fi
     sleep "${wait_s}"
   done
   echo "timeout waiting for flex-ipfs api in: ${svc}" >&2
   return 1
-}
-
-urlencode() {
-  python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
 }
 
 json_get() {
@@ -91,45 +87,60 @@ except Exception:
 }
 
 echo "Starting 2-node docker compose..." >&2
-dc up -d --build
+dc up -d --build full
 
-echo "Waiting for bbs-node health..." >&2
-wait_http_ok "http://127.0.0.1:18080/healthz" 90 1
-wait_http_ok "http://127.0.0.1:28080/healthz" 90 1
-
-echo "Waiting for flex-ipfs api..." >&2
-wait_flexipfs_api full 120 1
-wait_flexipfs_api client 120 1
+echo "Waiting for full node health..." >&2
+wait_http_ok "http://127.0.0.1:18080/healthz" 120 1
+echo "Waiting for full flex-ipfs api..." >&2
+wait_flexipfs_api full 180 1
 
 full_cid="$(dc ps -q full)"
-client_cid="$(dc ps -q client)"
-if [[ -z "${full_cid}" || -z "${client_cid}" ]]; then
-  echo "container IDs not found" >&2
+if [[ -z "${full_cid}" ]]; then
+  echo "container ID not found: full" >&2
   exit 1
 fi
 
 full_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${full_cid}")"
-client_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${client_cid}")"
-if [[ -z "${full_ip}" || -z "${client_ip}" ]]; then
-  echo "container IPs not found: full=${full_ip} client=${client_ip}" >&2
+if [[ -z "${full_ip}" ]]; then
+  echo "container IP not found: full=${full_ip}" >&2
   exit 1
 fi
 
 full_id_json="$(dc exec -T full curl -fsS -X POST "http://127.0.0.1:5001/api/v0/id")"
-client_id_json="$(dc exec -T client curl -fsS -X POST "http://127.0.0.1:5001/api/v0/id")"
 full_peer="$(printf '%s' "${full_id_json}" | json_get ID)"
-client_peer="$(printf '%s' "${client_id_json}" | json_get ID)"
-
-if [[ -z "${full_peer}" || -z "${client_peer}" ]]; then
-  echo "peer IDs not found: full=${full_peer} client=${client_peer}" >&2
+if [[ -z "${full_peer}" ]]; then
+  echo "peer ID not found: full=${full_peer}" >&2
   exit 1
 fi
 
-echo "Connecting peers (swarm/connect)..." >&2
 full_ma="/ip4/${full_ip}/tcp/4001/ipfs/${full_peer}"
+export CLIENT_FLEXIPFS_GW_ENDPOINT="${full_ma}"
+echo "Starting client node with CLIENT_FLEXIPFS_GW_ENDPOINT=${CLIENT_FLEXIPFS_GW_ENDPOINT}" >&2
+dc up -d --build --force-recreate client
+
+echo "Waiting for client node health..." >&2
+wait_http_ok "http://127.0.0.1:28080/healthz" 120 1
+echo "Waiting for client flex-ipfs api..." >&2
+wait_flexipfs_api client 180 1
+
+client_cid="$(dc ps -q client)"
+if [[ -z "${client_cid}" ]]; then
+  echo "container ID not found: client" >&2
+  exit 1
+fi
+client_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${client_cid}")"
+if [[ -z "${client_ip}" ]]; then
+  echo "container IP not found: client=${client_ip}" >&2
+  exit 1
+fi
+
+client_id_json="$(dc exec -T client curl -fsS -X POST "http://127.0.0.1:5001/api/v0/id")"
+client_peer="$(printf '%s' "${client_id_json}" | json_get ID)"
+if [[ -z "${client_peer}" ]]; then
+  echo "peer ID not found: client=${client_peer}" >&2
+  exit 1
+fi
 client_ma="/ip4/${client_ip}/tcp/4001/ipfs/${client_peer}"
-dc exec -T client curl -fsS -X POST "http://127.0.0.1:5001/api/v0/swarm/connect?arg=$(urlencode "${full_ma}")" >/dev/null
-dc exec -T full curl -fsS -X POST "http://127.0.0.1:5001/api/v0/swarm/connect?arg=$(urlencode "${client_ma}")" >/dev/null
 
 echo "Waiting for peerlist to include the other peer..." >&2
 for _ in {1..60}; do
