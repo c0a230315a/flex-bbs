@@ -10,7 +10,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"syscall"
 	"time"
 
@@ -29,6 +28,9 @@ var (
 	flexIPFSBase       = flag.String("flexipfs-base-url", "http://127.0.0.1:5001/api/v0", "Flexible-IPFS HTTP API base URL")
 	flexIPFSBaseDir    = flag.String("flexipfs-base-dir", "", "path to flexible-ipfs-base (auto-detected if empty)")
 	flexIPFSGWEndpoint = flag.String("flexipfs-gw-endpoint", "", "override ipfs.endpoint in flexible-ipfs-base/kadrtt.properties when autostarting (also via env FLEXIPFS_GW_ENDPOINT)")
+	flexIPFSMdns       = flag.Bool("flexipfs-mdns", false, "use mDNS on LAN to discover/advertise flex-ipfs gw endpoint")
+	flexIPFSMdnsSvc    = flag.String("flexipfs-mdns-service", defaultFlexIPFSMdnsService, "mDNS service type for flex-ipfs gw endpoint (e.g. _flexipfs-gw._tcp)")
+	flexIPFSMdnsTO     = flag.Duration("flexipfs-mdns-timeout", defaultFlexIPFSMdnsTimeout, "mDNS discovery timeout")
 	autoStartFlexIPFS  = flag.Bool("autostart-flexipfs", true, "auto start local Flexible-IPFS if not running")
 	httpAddr           = flag.String("http", "127.0.0.1:8080", "HTTP listen address")
 	dataDir            = flag.String("data-dir", "", "data directory for boards.json and index db (defaults to OS config dir)")
@@ -56,9 +58,26 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	flexGWEndpoint, flexGWExplicit := resolveFlexIPFSGWEndpointWithMdns(ctx, *flexIPFSGWEndpoint, *flexIPFSMdns, *flexIPFSMdnsSvc, *flexIPFSMdnsTO)
+	var stopMdns func()
+	if flexGWExplicit {
+		s, err := maybeAdvertiseFlexIPFSGWEndpointMdns(flexGWEndpoint, *flexIPFSMdns, *flexIPFSMdnsSvc)
+		if err != nil {
+			log.Printf("flex-ipfs mdns advertise failed: %v", err)
+		} else {
+			stopMdns = s
+		}
+	}
+
+	dd := *dataDir
+	if dd == "" {
+		dd = defaultDataDir()
+	}
+	logDir := filepath.Join(dd, "logs")
+
 	var flexProc *flexIPFSProc
 	if *autoStartFlexIPFS {
-		p, err := maybeStartFlexIPFS(ctx, *flexIPFSBase, *flexIPFSBaseDir, resolveFlexIPFSGWEndpoint(*flexIPFSGWEndpoint))
+		p, err := maybeStartFlexIPFS(ctx, *flexIPFSBase, *flexIPFSBaseDir, flexGWEndpoint, logDir)
 		if err != nil {
 			log.Printf("flex-ipfs autostart failed: %v", err)
 		} else {
@@ -79,10 +98,10 @@ func main() {
 		cancel()
 	}()
 
-	dd := *dataDir
-	if dd == "" {
-		dd = defaultDataDir()
+	if stopMdns != nil {
+		defer stopMdns()
 	}
+
 	bf := *boardsFile
 	if bf == "" {
 		bf = filepath.Join(dd, "boards.json")
@@ -144,16 +163,6 @@ func main() {
 	if flexProc != nil {
 		flexProc.stop()
 	}
-}
-
-func resolveFlexIPFSGWEndpoint(flagValue string) string {
-	if v := strings.TrimSpace(flagValue); v != "" {
-		return v
-	}
-	if v := strings.TrimSpace(os.Getenv("FLEXIPFS_GW_ENDPOINT")); v != "" {
-		return v
-	}
-	return ""
 }
 
 func defaultDataDir() string {
@@ -222,6 +231,9 @@ func runInitBoard(args []string) int {
 	flexBase := fs.String("flexipfs-base-url", "http://127.0.0.1:5001/api/v0", "Flexible-IPFS HTTP API base URL")
 	flexBaseDir := fs.String("flexipfs-base-dir", "", "path to flexible-ipfs-base (auto-detected if empty)")
 	flexGWEndpoint := fs.String("flexipfs-gw-endpoint", "", "override ipfs.endpoint in flexible-ipfs-base/kadrtt.properties when autostarting (also via env FLEXIPFS_GW_ENDPOINT)")
+	flexMdns := fs.Bool("flexipfs-mdns", false, "use mDNS on LAN to discover flex-ipfs gw endpoint")
+	flexMdnsSvc := fs.String("flexipfs-mdns-service", defaultFlexIPFSMdnsService, "mDNS service type for flex-ipfs gw endpoint (e.g. _flexipfs-gw._tcp)")
+	flexMdnsTO := fs.Duration("flexipfs-mdns-timeout", defaultFlexIPFSMdnsTimeout, "mDNS discovery timeout")
 	autostartFlexIPFS := fs.Bool("autostart-flexipfs", true, "auto start local Flexible-IPFS if not running")
 	dd := fs.String("data-dir", "", "data directory (defaults to OS config dir)")
 	bf := fs.String("boards-file", "", "boards.json path (defaults to <data-dir>/boards.json)")
@@ -245,7 +257,8 @@ func runInitBoard(args []string) int {
 	defer cancel()
 	var flexProc *flexIPFSProc
 	if *autostartFlexIPFS {
-		p, err := maybeStartFlexIPFS(ctx, *flexBase, *flexBaseDir, resolveFlexIPFSGWEndpoint(*flexGWEndpoint))
+		flexGW, _ := resolveFlexIPFSGWEndpointWithMdns(ctx, *flexGWEndpoint, *flexMdns, *flexMdnsSvc, *flexMdnsTO)
+		p, err := maybeStartFlexIPFS(ctx, *flexBase, *flexBaseDir, flexGW, filepath.Join(data, "logs"))
 		if err != nil {
 			log.Printf("flex-ipfs autostart failed: %v", err)
 		} else {

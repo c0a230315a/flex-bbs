@@ -148,4 +148,7 @@ dotnet build src/BbsClient/BbsClient.csproj -c Release
 
 - 初回起動時に必要な `providers/`, `getdata/`, `attr` は `run.sh` / `run.bat` が自動生成します。
 - `kadrtt.properties` の `ipfs.endpoint` を毎回手で編集せずに済むよう、起動時に `FLEXIPFS_GW_ENDPOINT`（または `bbs-node --flexipfs-gw-endpoint ...`）で上書きできます。
+- 学内LANなどでは `bbs-node --flexipfs-mdns=true` により mDNS で gw endpoint を探索できます（広告する側は `--flexipfs-gw-endpoint ...` も指定）。
+- ログは基本的に `<data-dir>/logs/` 配下に出力します（例: `bbs-client.log`, `bbs-node.log`, `flex-ipfs.log`）。
+- HTTP API の契約は `docs/openapi.yaml` にあり、C# DTO は `scripts/generate-bbsclient-models.sh` で再生成できます。
 - Go バックエンドは `/api/v1` で BBS API を提供します（動作仕様は `docs/flexible_ipfs_bbs_仕様書.md` を参照）。

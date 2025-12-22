@@ -163,13 +163,13 @@ func (c *Client) postQuery(ctx context.Context, apiPath string, q url.Values) (b
 	}
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return nil, 0, nil, nil, err
+		return nil, 0, nil, nil, fmt.Errorf("flexipfs POST %s: %w", fullURL, err)
 	}
 	defer resp.Body.Close()
 
 	b, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
-		return nil, resp.StatusCode, nil, nil, readErr
+		return nil, resp.StatusCode, nil, nil, fmt.Errorf("flexipfs read response %s: %w", fullURL, readErr)
 	}
 	return b, resp.StatusCode, resp.Header.Clone(), resp.Trailer, nil
 }

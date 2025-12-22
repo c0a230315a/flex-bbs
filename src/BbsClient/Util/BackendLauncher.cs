@@ -25,6 +25,7 @@ public sealed class BackendLauncher : IDisposable
         }
         if (!startBackend)
         {
+            AppLog.Warn($"backend not healthy at {backendBaseUrl} (auto-start disabled)");
             return;
         }
         if (string.IsNullOrWhiteSpace(bbsNodePath))
@@ -41,6 +42,7 @@ public sealed class BackendLauncher : IDisposable
         {
             return;
         }
+        AppLog.Info("stopping managed bbs-node");
         try
         {
             if (!_process.HasExited)
@@ -92,15 +94,16 @@ public sealed class BackendLauncher : IDisposable
         }
 
         CloseLog();
-        var logDir = TryGetArgValue(bbsNodeArgs, "--data-dir");
-        if (string.IsNullOrWhiteSpace(logDir))
+        var dataDir = TryGetArgValue(bbsNodeArgs, "--data-dir");
+        if (string.IsNullOrWhiteSpace(dataDir))
         {
-            logDir = ConfigPaths.DefaultAppDir();
+            dataDir = ConfigPaths.DefaultAppDir();
         }
         try
         {
-            Directory.CreateDirectory(logDir);
-            _logFilePath = Path.Combine(logDir, "bbs-node.log");
+            var logsDir = Path.Combine(dataDir, "logs");
+            Directory.CreateDirectory(logsDir);
+            _logFilePath = Path.Combine(logsDir, "bbs-node.log");
             _logWriter = new StreamWriter(File.Open(_logFilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
             {
                 AutoFlush = true,
@@ -126,7 +129,9 @@ public sealed class BackendLauncher : IDisposable
         {
             psi.ArgumentList.Add(a);
         }
+        AppLog.Info($"starting bbs-node: {bbsNodePath} {string.Join(" ", bbsNodeArgs)}");
         _process = Process.Start(psi) ?? throw new InvalidOperationException("failed to start bbs-node");
+        AppLog.Info($"bbs-node started pid={_process.Id} log={_logFilePath ?? "<none>"}");
 
         try
         {
@@ -180,8 +185,10 @@ public sealed class BackendLauncher : IDisposable
             var tail = string.Join("\n", GetRecentLogs(30));
             if (!string.IsNullOrWhiteSpace(tail))
             {
+                AppLog.Error($"backend did not become healthy in time{hint}", ex);
                 throw new TimeoutException($"backend did not become healthy in time{hint}\n{tail}", ex);
             }
+            AppLog.Error($"backend did not become healthy in time{hint}", ex);
             throw new TimeoutException($"backend did not become healthy in time{hint}", ex);
         }
     }

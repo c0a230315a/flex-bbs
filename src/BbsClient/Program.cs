@@ -34,6 +34,8 @@ var flexIpfsBaseDir = GetOption(args, "--flexipfs-base-dir") ?? persistedConfig.
 var flexIpfsGwEndpoint = GetOption(args, "--flexipfs-gw-endpoint") ?? persistedConfig.FlexIpfsGwEndpoint;
 var autostartFlexIpfs = GetBoolOption(args, "--autostart-flexipfs")
                         ?? (HasFlag(args, "--no-autostart-flexipfs") ? false : persistedConfig.AutostartFlexIpfs);
+var flexIpfsMdns = GetBoolOption(args, "--flexipfs-mdns")
+                   ?? (HasFlag(args, "--no-flexipfs-mdns") ? false : persistedConfig.FlexIpfsMdns);
 
 var effectiveConfig = persistedConfig with
 {
@@ -45,12 +47,19 @@ var effectiveConfig = persistedConfig with
     FlexIpfsBaseDir = flexIpfsBaseDir,
     FlexIpfsGwEndpoint = flexIpfsGwEndpoint,
     AutostartFlexIpfs = autostartFlexIpfs,
+    FlexIpfsMdns = flexIpfsMdns,
 };
 effectiveConfig = effectiveConfig.Normalize();
 backend = effectiveConfig.BackendBaseUrl;
 dataDir = effectiveConfig.DataDir;
 startBackend = effectiveConfig.StartBackend;
 bbsNodePath = effectiveConfig.BbsNodePath;
+
+AppLog.Init(dataDir);
+AppDomain.CurrentDomain.ProcessExit += (_, _) => AppLog.Close();
+AppLog.Info(
+    $"config backend={backend} role={effectiveConfig.BackendRole} dataDir={dataDir} startBackend={startBackend} bbsNodePath={(bbsNodePath ?? "<auto>")} flexBaseUrl={effectiveConfig.FlexIpfsBaseUrl} autostartFlex={effectiveConfig.AutostartFlexIpfs} mdns={effectiveConfig.FlexIpfsMdns} gwOverride={(string.IsNullOrWhiteSpace(effectiveConfig.FlexIpfsGwEndpoint) ? "<none>" : effectiveConfig.FlexIpfsGwEndpoint)}"
+);
 
 using var launcher = new BackendLauncher();
 var cmdIndex = FindCommandIndex(args);
@@ -99,6 +108,7 @@ try
 }
 catch (Exception ex)
 {
+    AppLog.Error("backend ensure running failed", ex);
     Console.Error.WriteLine(ex.Message);
     return ex is InvalidOperationException or UriFormatException ? 2 : 1;
 }
@@ -139,6 +149,7 @@ try
 }
 catch (Exception ex)
 {
+    AppLog.Error($"command failed: {command}", ex);
     Console.Error.WriteLine(ex.Message);
     return 1;
 }
@@ -240,7 +251,7 @@ static async Task<int> HandleBoards(BbsApiClient api, string[] args, Cancellatio
     var boards = await api.GetBoardsAsync(ct);
     foreach (var b in boards)
     {
-        Console.WriteLine($"{b.Board.BoardID}\t{b.Board.Title}\t{b.BoardMetaCID}");
+        Console.WriteLine($"{b.Board.BoardId}\t{b.Board.Title}\t{b.BoardMetaCid}");
     }
     return 0;
 }
@@ -258,7 +269,7 @@ static async Task<int> HandleThreads(BbsApiClient api, string[] args, Cancellati
     var threads = await api.GetThreadsAsync(boardId, limit, offset, ct);
     foreach (var t in threads)
     {
-        Console.WriteLine($"{t.ThreadID}\t{t.Thread.Title}\t{t.Thread.CreatedAt}");
+        Console.WriteLine($"{t.ThreadId}\t{t.Thread.Title}\t{t.Thread.CreatedAt}");
     }
     return 0;
 }
@@ -274,7 +285,7 @@ static async Task<int> HandleThread(BbsApiClient api, BlockedStore blocked, stri
     var blockedKeys = await blocked.LoadAsync(ct);
     var tr = await api.GetThreadAsync(threadId, ct);
 
-    Console.WriteLine($"[{tr.ThreadMeta.BoardID}] {tr.ThreadMeta.Title}");
+    Console.WriteLine($"[{tr.ThreadMeta.BoardId}] {tr.ThreadMeta.Title}");
     foreach (var p in tr.Posts)
     {
         if (blockedKeys.Contains(p.Post.AuthorPubKey))
@@ -282,7 +293,7 @@ static async Task<int> HandleThread(BbsApiClient api, BlockedStore blocked, stri
             continue;
         }
 
-        var head = $"{p.CID}\t{p.Post.DisplayName}\t{p.Post.AuthorPubKey}\t{p.Post.CreatedAt}";
+        var head = $"{p.Cid}\t{p.Post.DisplayName}\t{p.Post.AuthorPubKey}\t{p.Post.CreatedAt}";
         if (!string.IsNullOrWhiteSpace(p.Post.EditedAt))
         {
             head += $"\t(edited {p.Post.EditedAt})";
@@ -322,14 +333,14 @@ static async Task<int> HandleCreateThread(BbsApiClient api, KeyStore keys, strin
 
     var resp = await api.CreateThreadAsync(new CreateThreadRequest
     {
-        BoardID = boardId,
+        BoardId = boardId,
         Title = title,
         DisplayName = displayName,
         Body = new PostBody { Format = "markdown", Content = body },
         AuthorPrivKey = key.Priv,
     }, ct);
 
-    Console.WriteLine(resp.ThreadID);
+    Console.WriteLine(resp.ThreadId);
     return 0;
 }
 
@@ -356,13 +367,13 @@ static async Task<int> HandleAddPost(BbsApiClient api, KeyStore keys, string[] a
 
     var resp = await api.AddPostAsync(new AddPostRequest
     {
-        ThreadID = threadId,
-        ParentPostCID = string.IsNullOrWhiteSpace(parent) ? null : parent,
+        ThreadId = threadId,
+        ParentPostCid = string.IsNullOrWhiteSpace(parent) ? null : parent,
         DisplayName = displayName,
         Body = new PostBody { Format = "markdown", Content = body },
         AuthorPrivKey = key.Priv,
     }, ct);
-    Console.WriteLine(resp.PostCID);
+    Console.WriteLine(resp.PostCid);
     return 0;
 }
 
@@ -392,7 +403,7 @@ static async Task<int> HandleEditPost(BbsApiClient api, KeyStore keys, string[] 
         DisplayName = displayName,
         AuthorPrivKey = key.Priv,
     }, ct);
-    Console.WriteLine(resp.NewPostCID);
+    Console.WriteLine(resp.NewPostCid);
     return 0;
 }
 
@@ -420,7 +431,7 @@ static async Task<int> HandleTombstonePost(BbsApiClient api, KeyStore keys, stri
         Reason = string.IsNullOrWhiteSpace(reason) ? null : reason,
         AuthorPrivKey = key.Priv,
     }, ct);
-    Console.WriteLine(resp.TargetPostCID);
+    Console.WriteLine(resp.TargetPostCid);
     return 0;
 }
 
@@ -521,6 +532,8 @@ static void PrintHelp()
     Console.WriteLine("  --flexipfs-gw-endpoint <val>  (override ipfs.endpoint on autostart)");
     Console.WriteLine("  --autostart-flexipfs=<bool>   (default: true)");
     Console.WriteLine("  --no-autostart-flexipfs       (disable flex-ipfs autostart)");
+    Console.WriteLine("  --flexipfs-mdns=<bool>        (default: false; discover gw endpoint via mDNS)");
+    Console.WriteLine("  --no-flexipfs-mdns            (disable mDNS discovery)");
     Console.WriteLine();
     Console.WriteLine("Commands:");
     Console.WriteLine("  ui  (interactive TUI, default)");

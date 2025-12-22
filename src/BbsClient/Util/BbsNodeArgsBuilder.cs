@@ -18,6 +18,7 @@ public static class BbsNodeArgsBuilder
             "--data-dir", cfg.DataDir,
             "--flexipfs-base-url", cfg.FlexIpfsBaseUrl,
             $"--autostart-flexipfs={cfg.AutostartFlexIpfs.ToString().ToLowerInvariant()}",
+            $"--flexipfs-mdns={cfg.FlexIpfsMdns.ToString().ToLowerInvariant()}",
         };
 
         if (!string.IsNullOrWhiteSpace(cfg.FlexIpfsBaseDir))

@@ -22,7 +22,7 @@ type flexIPFSProc struct {
 	logFile     *os.File
 }
 
-func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride, gwEndpointOverride string) (*flexIPFSProc, error) {
+func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride, gwEndpointOverride, logDir string) (*flexIPFSProc, error) {
 	if !isLocalBaseURL(baseURL) {
 		log.Printf("flex-ipfs autostart skipped (non-local base url): %s", baseURL)
 		return nil, nil
@@ -45,7 +45,7 @@ func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride, gwEndpoin
 		return nil, err
 	}
 
-	proc, err := startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride)
+	proc, err := startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride, logDir)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +147,7 @@ func findJavaBin(runtimeDir string) (string, error) {
 	return exec.LookPath("java")
 }
 
-func startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride string) (*flexIPFSProc, error) {
+func startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride, logDir string) (*flexIPFSProc, error) {
 	if err := os.MkdirAll(filepath.Join(flexBaseDir, "providers"), 0o755); err != nil {
 		return nil, err
 	}
@@ -174,22 +174,36 @@ func startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride string) (*flexIPFSPr
 	)
 	cmd.Stdin = stdinR
 	var logFile *os.File
+	logPath := filepath.Join(flexBaseDir, "flex-ipfs.log")
+	if strings.TrimSpace(logDir) != "" {
+		logPath = filepath.Join(logDir, "flex-ipfs.log")
+	}
+	_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
+	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+		logFile = f
+	}
+
 	if !isCharDevice(os.Stdout) || !isCharDevice(os.Stderr) {
 		// When bbs-node is run with stdout/stderr redirected (e.g., from the TUI),
 		// inheriting those pipes can keep the parent process' output streams open
 		// even after bbs-node exits, which can make callers appear to "hang".
 		// Log to a file instead in that case.
-		if f, err := os.OpenFile(filepath.Join(flexBaseDir, "flex-ipfs.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
-			logFile = f
-			cmd.Stdout = f
-			cmd.Stderr = f
+		if logFile != nil {
+			cmd.Stdout = logFile
+			cmd.Stderr = logFile
 		} else {
 			cmd.Stdout = io.Discard
 			cmd.Stderr = io.Discard
 		}
 	} else {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		if logFile != nil {
+			mw := io.MultiWriter(os.Stdout, logFile)
+			cmd.Stdout = mw
+			cmd.Stderr = mw
+		} else {
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+		}
 	}
 
 	if err := cmd.Start(); err != nil {

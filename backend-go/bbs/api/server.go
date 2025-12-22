@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -56,9 +57,11 @@ func (s *Server) listBoards(w http.ResponseWriter, r *http.Request) {
 	for _, ref := range refs {
 		bm, err := s.Storage.LoadBoardMeta(ctx, ref.BoardMetaCID)
 		if err != nil {
+			log.Printf("api listBoards: load boardMeta cid=%s: %v", ref.BoardMetaCID, err)
 			continue
 		}
 		if !bbslog.VerifyBoardMeta(bm) {
+			log.Printf("api listBoards: invalid boardMeta signature cid=%s boardId=%s", ref.BoardMetaCID, bm.BoardID)
 			continue
 		}
 		out = append(out, BoardItem{BoardMetaCID: ref.BoardMetaCID, Board: *bm})
@@ -129,9 +132,11 @@ func (s *Server) listThreads(w http.ResponseWriter, r *http.Request) {
 	for _, x := range byThread {
 		tm, err := s.Storage.LoadThreadMeta(ctx, x.ThreadCID)
 		if err != nil {
+			log.Printf("api listThreads: load threadMeta cid=%s: %v", x.ThreadCID, err)
 			continue
 		}
 		if !bbslog.VerifyThreadMeta(tm) {
+			log.Printf("api listThreads: invalid threadMeta signature cid=%s threadId=%s", x.ThreadCID, tm.ThreadID)
 			continue
 		}
 		tm.ThreadID = x.ThreadCID

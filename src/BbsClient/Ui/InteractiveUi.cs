@@ -24,6 +24,7 @@ public static class InteractiveUi
         }
 
         var cfg = initialConfig.Normalize();
+        AppLog.Init(cfg.DataDir);
 
         using var http = new HttpClient();
         var api = new BbsApiClient(http, cfg.BackendBaseUrl);
@@ -44,6 +45,7 @@ public static class InteractiveUi
         catch (Exception ex)
         {
             backendStartError = ex.Message;
+            AppLog.Error("backend start failed", ex);
         }
 
         while (true)
@@ -132,7 +134,7 @@ public static class InteractiveUi
             }
 
             boards = boards
-                .OrderBy(b => b.Board.BoardID, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(b => b.Board.BoardId, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
             var table = new Table().Border(TableBorder.Rounded);
@@ -142,9 +144,9 @@ public static class InteractiveUi
             foreach (var b in boards)
             {
                 table.AddRow(
-                    Markup.Escape(b.Board.BoardID),
+                    Markup.Escape(b.Board.BoardId),
                     Markup.Escape(b.Board.Title),
-                    Markup.Escape(Short(b.BoardMetaCID, 24))
+                    Markup.Escape(Short(b.BoardMetaCid, 24))
                 );
             }
             AnsiConsole.Write(table);
@@ -183,10 +185,10 @@ public static class InteractiveUi
                             .PageSize(12)
                             .MoreChoicesText("[grey](move up and down to reveal more boards)[/]")
                             .AddChoices(boards)
-                            .UseConverter(b => $"{Markup.Escape(b.Board.BoardID)}  {Markup.Escape(b.Board.Title)}  [grey]{Markup.Escape(Short(b.BoardMetaCID, 24))}[/]")
+                            .UseConverter(b => $"{Markup.Escape(b.Board.BoardId)}  {Markup.Escape(b.Board.Title)}  [grey]{Markup.Escape(Short(b.BoardMetaCid, 24))}[/]")
                     );
 
-                    await BrowseThreadsAsync(api, keys, blocked, selected.Board.BoardID, selected.Board.Title, ct);
+                    await BrowseThreadsAsync(api, keys, blocked, selected.Board.BoardId, selected.Board.Title, ct);
                     break;
                 }
                 case "Create board":
@@ -394,7 +396,7 @@ public static class InteractiveUi
                 var t = threads[i];
                 table.AddRow(
                     (offset + i + 1).ToString(),
-                    Markup.Escape(Short(t.ThreadID, 24)),
+                    Markup.Escape(Short(t.ThreadId, 24)),
                     Markup.Escape(t.Thread.Title),
                     Markup.Escape(t.Thread.CreatedAt)
                 );
@@ -441,10 +443,10 @@ public static class InteractiveUi
                             .PageSize(12)
                             .MoreChoicesText("[grey](move up and down to reveal more threads)[/]")
                             .AddChoices(threads)
-                            .UseConverter(t => $"{Markup.Escape(t.Thread.Title)}  [grey]{Markup.Escape(t.ThreadID)}[/]")
+                            .UseConverter(t => $"{Markup.Escape(t.Thread.Title)}  [grey]{Markup.Escape(t.ThreadId)}[/]")
                     );
 
-                    await BrowseThreadAsync(api, keys, blocked, thread.ThreadID, ct);
+                    await BrowseThreadAsync(api, keys, blocked, thread.ThreadId, ct);
                     break;
                 }
                 case "Create thread":
@@ -487,9 +489,9 @@ public static class InteractiveUi
 
             AnsiConsole.Clear();
             AnsiConsole.Write(new Rule("[bold]Thread[/]").LeftJustified());
-            AnsiConsole.MarkupLine($"[grey]Board:[/] {Markup.Escape(tr.ThreadMeta.BoardID)}");
+            AnsiConsole.MarkupLine($"[grey]Board:[/] {Markup.Escape(tr.ThreadMeta.BoardId)}");
             AnsiConsole.MarkupLine($"[grey]Title:[/] {Markup.Escape(tr.ThreadMeta.Title)}");
-            AnsiConsole.MarkupLine($"[grey]ThreadID:[/] {Markup.Escape(tr.ThreadMeta.ThreadID)}");
+            AnsiConsole.MarkupLine($"[grey]ThreadID:[/] {Markup.Escape(tr.ThreadMeta.ThreadId)}");
             AnsiConsole.WriteLine();
 
             var visiblePosts = tr.Posts.Where(p => !blockedKeys.Contains(p.Post.AuthorPubKey)).ToList();
@@ -510,11 +512,11 @@ public static class InteractiveUi
                     meta += $" [grey](edited {Markup.Escape(p.Post.EditedAt)})[/]";
                 }
 
-                var cidLine = $"[grey]CID:[/] {Markup.Escape(p.CID)}";
+                var cidLine = $"[grey]CID:[/] {Markup.Escape(p.Cid)}";
                 var authorLine = $"[grey]Author:[/] {Markup.Escape(Short(p.Post.AuthorPubKey, 24))}";
-                var parentLine = string.IsNullOrWhiteSpace(p.Post.ParentPostCID)
+                var parentLine = string.IsNullOrWhiteSpace(p.Post.ParentPostCid)
                     ? null
-                    : $"[grey]Parent:[/] {Markup.Escape(Short(p.Post.ParentPostCID, 24))}";
+                    : $"[grey]Parent:[/] {Markup.Escape(Short(p.Post.ParentPostCid, 24))}";
 
                 var body = p.Tombstoned
                     ? $"[red][tombstoned][/]\n{Markup.Escape(p.TombstoneReason ?? "")}".TrimEnd()
@@ -595,9 +597,9 @@ public static class InteractiveUi
                     .PageSize(12)
                     .MoreChoicesText("[grey](move up and down to reveal more posts)[/]")
                     .AddChoices(visiblePosts)
-                    .UseConverter(p => $"{Markup.Escape(p.Post.DisplayName)}  [grey]{Markup.Escape(Short(p.CID, 24))}[/]")
+                    .UseConverter(p => $"{Markup.Escape(p.Post.DisplayName)}  [grey]{Markup.Escape(Short(p.Cid, 24))}[/]")
             );
-            parent = selected.CID;
+            parent = selected.Cid;
         }
 
         var body = ReadMultiline("Body");
@@ -612,14 +614,14 @@ public static class InteractiveUi
         {
             var resp = await api.AddPostAsync(new AddPostRequest
             {
-                ThreadID = threadId,
-                ParentPostCID = parent,
+                ThreadId = threadId,
+                ParentPostCid = parent,
                 DisplayName = displayName,
                 Body = new PostBody { Format = "markdown", Content = body },
                 AuthorPrivKey = key.Priv,
             }, ct);
 
-            AnsiConsole.MarkupLine($"[green]ok[/] postCid={Markup.Escape(resp.PostCID)}");
+            AnsiConsole.MarkupLine($"[green]ok[/] postCid={Markup.Escape(resp.PostCid)}");
             Pause();
         }
         catch (Exception ex)
@@ -659,14 +661,14 @@ public static class InteractiveUi
         {
             var resp = await api.CreateThreadAsync(new CreateThreadRequest
             {
-                BoardID = boardId,
+                BoardId = boardId,
                 Title = title,
                 DisplayName = displayName,
                 Body = new PostBody { Format = "markdown", Content = body },
                 AuthorPrivKey = key.Priv,
             }, ct);
 
-            AnsiConsole.MarkupLine($"[green]ok[/] threadId={Markup.Escape(resp.ThreadID)}");
+            AnsiConsole.MarkupLine($"[green]ok[/] threadId={Markup.Escape(resp.ThreadId)}");
             Pause();
         }
         catch (Exception ex)
@@ -697,7 +699,7 @@ public static class InteractiveUi
                 .PageSize(12)
                 .MoreChoicesText("[grey](move up and down to reveal more posts)[/]")
                 .AddChoices(visiblePosts)
-                .UseConverter(p => $"{Markup.Escape(p.Post.DisplayName)}  [grey]{Markup.Escape(Short(p.CID, 24))}[/]")
+                .UseConverter(p => $"{Markup.Escape(p.Post.DisplayName)}  [grey]{Markup.Escape(Short(p.Cid, 24))}[/]")
         );
 
         var displayName = EmptyToNull(AnsiConsole.Ask("Display name (optional, blank = keep)", ""));
@@ -712,14 +714,14 @@ public static class InteractiveUi
 
         try
         {
-            var resp = await api.EditPostAsync(selected.CID, new EditPostRequest
+            var resp = await api.EditPostAsync(selected.Cid, new EditPostRequest
             {
                 Body = new PostBody { Format = "markdown", Content = body },
                 DisplayName = displayName,
                 AuthorPrivKey = key.Priv,
             }, ct);
 
-            AnsiConsole.MarkupLine($"[green]ok[/] newPostCid={Markup.Escape(resp.NewPostCID)}");
+            AnsiConsole.MarkupLine($"[green]ok[/] newPostCid={Markup.Escape(resp.NewPostCid)}");
             Pause();
         }
         catch (Exception ex)
@@ -750,20 +752,20 @@ public static class InteractiveUi
                 .PageSize(12)
                 .MoreChoicesText("[grey](move up and down to reveal more posts)[/]")
                 .AddChoices(visiblePosts)
-                .UseConverter(p => $"{Markup.Escape(p.Post.DisplayName)}  [grey]{Markup.Escape(Short(p.CID, 24))}[/]")
+                .UseConverter(p => $"{Markup.Escape(p.Post.DisplayName)}  [grey]{Markup.Escape(Short(p.Cid, 24))}[/]")
         );
 
         var reason = EmptyToNull(AnsiConsole.Ask("Reason (optional)", ""));
 
         try
         {
-            var resp = await api.TombstonePostAsync(selected.CID, new TombstonePostRequest
+            var resp = await api.TombstonePostAsync(selected.Cid, new TombstonePostRequest
             {
                 Reason = reason,
                 AuthorPrivKey = key.Priv,
             }, ct);
 
-            AnsiConsole.MarkupLine($"[green]ok[/] tombstoned {Markup.Escape(resp.TargetPostCID)}");
+            AnsiConsole.MarkupLine($"[green]ok[/] tombstoned {Markup.Escape(resp.TargetPostCid)}");
             Pause();
         }
         catch (Exception ex)
@@ -815,9 +817,9 @@ public static class InteractiveUi
                 var r = results[i];
                 table.AddRow(
                     (offset + i + 1).ToString(),
-                    Markup.Escape(r.BoardID),
-                    Markup.Escape(Short(r.ThreadID, 16)),
-                    Markup.Escape(Short(r.PostCID, 16)),
+                    Markup.Escape(r.BoardId),
+                    Markup.Escape(Short(r.ThreadId, 16)),
+                    Markup.Escape(Short(r.PostCid, 16)),
                     Markup.Escape(r.DisplayName),
                     Markup.Escape(r.CreatedAt)
                 );
@@ -860,11 +862,11 @@ public static class InteractiveUi
                             .MoreChoicesText("[grey](move up and down to reveal more results)[/]")
                             .AddChoices(results)
                             .UseConverter(r =>
-                                $"{Markup.Escape(r.DisplayName)}  [grey]{Markup.Escape(r.BoardID)} {Markup.Escape(Short(r.ThreadID, 16))} {Markup.Escape(Short(r.PostCID, 16))}[/]"
+                                $"{Markup.Escape(r.DisplayName)}  [grey]{Markup.Escape(r.BoardId)} {Markup.Escape(Short(r.ThreadId, 16))} {Markup.Escape(Short(r.PostCid, 16))}[/]"
                             )
                     );
 
-                    await BrowseThreadAsync(api, keys, blocked, selected.ThreadID, ct);
+                    await BrowseThreadAsync(api, keys, blocked, selected.ThreadId, ct);
                     break;
                 }
                 case "Block author":
@@ -1208,6 +1210,7 @@ public static class InteractiveUi
     {
         var flexBaseUrl = AnsiConsole.Ask("Flexible-IPFS HTTP API base URL", cfg.FlexIpfsBaseUrl);
         var autostartFlexIpfs = AnsiConsole.Confirm("Autostart Flexible-IPFS (when managed by bbs-node)?", cfg.AutostartFlexIpfs);
+        var flexIpfsMdns = AnsiConsole.Confirm("Use mDNS on LAN to discover flex-ipfs gw endpoint?", cfg.FlexIpfsMdns);
 
         var currentBaseDir = cfg.FlexIpfsBaseDir ?? "<auto>";
         var baseDirInput = AnsiConsole.Prompt(
@@ -1227,6 +1230,7 @@ public static class InteractiveUi
         {
             FlexIpfsBaseUrl = flexBaseUrl,
             AutostartFlexIpfs = autostartFlexIpfs,
+            FlexIpfsMdns = flexIpfsMdns,
             FlexIpfsBaseDir = baseDir,
             FlexIpfsGwEndpoint = gw,
         };
@@ -1291,10 +1295,12 @@ public static class InteractiveUi
             !string.Equals(oldCfg.FlexIpfsBaseUrl, newCfg.FlexIpfsBaseUrl, StringComparison.Ordinal) ||
             !string.Equals(oldCfg.FlexIpfsBaseDir, newCfg.FlexIpfsBaseDir, StringComparison.Ordinal) ||
             !string.Equals(oldCfg.FlexIpfsGwEndpoint, newCfg.FlexIpfsGwEndpoint, StringComparison.Ordinal) ||
+            oldCfg.FlexIpfsMdns != newCfg.FlexIpfsMdns ||
             oldCfg.AutostartFlexIpfs != newCfg.AutostartFlexIpfs;
 
         if (restartNeeded)
         {
+            AppLog.Init(newCfg.DataDir);
             await RestartBackendForFlexIpfsAsync(newCfg, launcher, ct);
         }
         else if (newCfg.StartBackend && !await BackendLauncher.IsHealthyAsync(newCfg.BackendBaseUrl, ct))
@@ -1812,6 +1818,7 @@ public static class InteractiveUi
     private static void ShowError(Exception ex)
     {
         AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+        AppLog.Error(ex.Message, ex);
     }
 
     private static void Pause()

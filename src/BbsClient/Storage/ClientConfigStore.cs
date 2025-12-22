@@ -58,6 +58,7 @@ public sealed record ClientConfig
     public string? FlexIpfsBaseDir { get; init; }
     public string? FlexIpfsGwEndpoint { get; init; }
     public bool AutostartFlexIpfs { get; init; } = true;
+    public bool FlexIpfsMdns { get; init; } = false;
 
     public ClientConfig Normalize()
     {

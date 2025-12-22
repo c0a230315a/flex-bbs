@@ -1,5 +1,7 @@
 using System.Net.Http.Json;
+using System.Diagnostics;
 using System.Text.Json;
+using BbsClient.Util;
 
 namespace BbsClient.Api;
 
@@ -22,56 +24,72 @@ public sealed class BbsApiClient
     public async Task<List<BoardItem>> GetBoardsAsync(CancellationToken ct)
     {
         var url = $"{_baseUrl}/api/v1/boards";
-        return await _http.GetFromJsonAsync<List<BoardItem>>(url, JsonOptions, ct) ?? [];
+        var sw = Stopwatch.StartNew();
+        using var resp = await SendAsync(HttpMethod.Get, url, ct);
+        await EnsureSuccess("GET", url, resp, ct, sw);
+        return await resp.Content.ReadFromJsonAsync<List<BoardItem>>(JsonOptions, ct) ?? [];
     }
 
     public async Task<BoardItem> GetBoardAsync(string boardId, CancellationToken ct)
     {
         var url = $"{_baseUrl}/api/v1/boards/{Uri.EscapeDataString(boardId)}";
-        return await _http.GetFromJsonAsync<BoardItem>(url, JsonOptions, ct) ?? throw new InvalidOperationException("empty response");
+        var sw = Stopwatch.StartNew();
+        using var resp = await SendAsync(HttpMethod.Get, url, ct);
+        await EnsureSuccess("GET", url, resp, ct, sw);
+        return await resp.Content.ReadFromJsonAsync<BoardItem>(JsonOptions, ct) ?? throw new InvalidOperationException("empty response");
     }
 
     public async Task<List<ThreadItem>> GetThreadsAsync(string boardId, int limit, int offset, CancellationToken ct)
     {
         var url = $"{_baseUrl}/api/v1/boards/{Uri.EscapeDataString(boardId)}/threads?limit={limit}&offset={offset}";
-        return await _http.GetFromJsonAsync<List<ThreadItem>>(url, JsonOptions, ct) ?? [];
+        var sw = Stopwatch.StartNew();
+        using var resp = await SendAsync(HttpMethod.Get, url, ct);
+        await EnsureSuccess("GET", url, resp, ct, sw);
+        return await resp.Content.ReadFromJsonAsync<List<ThreadItem>>(JsonOptions, ct) ?? [];
     }
 
     public async Task<ThreadResponse> GetThreadAsync(string threadId, CancellationToken ct)
     {
         var url = $"{_baseUrl}/api/v1/threads/{Uri.EscapeDataString(threadId)}";
-        return await _http.GetFromJsonAsync<ThreadResponse>(url, JsonOptions, ct) ?? throw new InvalidOperationException("empty response");
+        var sw = Stopwatch.StartNew();
+        using var resp = await SendAsync(HttpMethod.Get, url, ct);
+        await EnsureSuccess("GET", url, resp, ct, sw);
+        return await resp.Content.ReadFromJsonAsync<ThreadResponse>(JsonOptions, ct) ?? throw new InvalidOperationException("empty response");
     }
 
     public async Task<CreateThreadResponse> CreateThreadAsync(CreateThreadRequest req, CancellationToken ct)
     {
         var url = $"{_baseUrl}/api/v1/threads";
-        var resp = await _http.PostAsJsonAsync(url, req, JsonOptions, ct);
-        await EnsureSuccess(resp);
+        var sw = Stopwatch.StartNew();
+        using var resp = await _http.PostAsJsonAsync(url, req, JsonOptions, ct);
+        await EnsureSuccess("POST", url, resp, ct, sw);
         return (await resp.Content.ReadFromJsonAsync<CreateThreadResponse>(JsonOptions, ct)) ?? throw new InvalidOperationException("empty response");
     }
 
     public async Task<AddPostResponse> AddPostAsync(AddPostRequest req, CancellationToken ct)
     {
         var url = $"{_baseUrl}/api/v1/posts";
-        var resp = await _http.PostAsJsonAsync(url, req, JsonOptions, ct);
-        await EnsureSuccess(resp);
+        var sw = Stopwatch.StartNew();
+        using var resp = await _http.PostAsJsonAsync(url, req, JsonOptions, ct);
+        await EnsureSuccess("POST", url, resp, ct, sw);
         return (await resp.Content.ReadFromJsonAsync<AddPostResponse>(JsonOptions, ct)) ?? throw new InvalidOperationException("empty response");
     }
 
     public async Task<EditPostResponse> EditPostAsync(string postCid, EditPostRequest req, CancellationToken ct)
     {
         var url = $"{_baseUrl}/api/v1/posts/{Uri.EscapeDataString(postCid)}/edit";
-        var resp = await _http.PostAsJsonAsync(url, req, JsonOptions, ct);
-        await EnsureSuccess(resp);
+        var sw = Stopwatch.StartNew();
+        using var resp = await _http.PostAsJsonAsync(url, req, JsonOptions, ct);
+        await EnsureSuccess("POST", url, resp, ct, sw);
         return (await resp.Content.ReadFromJsonAsync<EditPostResponse>(JsonOptions, ct)) ?? throw new InvalidOperationException("empty response");
     }
 
     public async Task<TombstonePostResponse> TombstonePostAsync(string postCid, TombstonePostRequest req, CancellationToken ct)
     {
         var url = $"{_baseUrl}/api/v1/posts/{Uri.EscapeDataString(postCid)}/tombstone";
-        var resp = await _http.PostAsJsonAsync(url, req, JsonOptions, ct);
-        await EnsureSuccess(resp);
+        var sw = Stopwatch.StartNew();
+        using var resp = await _http.PostAsJsonAsync(url, req, JsonOptions, ct);
+        await EnsureSuccess("POST", url, resp, ct, sw);
         return (await resp.Content.ReadFromJsonAsync<TombstonePostResponse>(JsonOptions, ct)) ?? throw new InvalidOperationException("empty response");
     }
 
@@ -86,18 +104,55 @@ public sealed class BbsApiClient
         query.Add($"limit={limit}");
         query.Add($"offset={offset}");
         var url = $"{_baseUrl}/api/v1/search/posts?{string.Join("&", query)}";
-        var resp = await _http.GetAsync(url, ct);
-        await EnsureSuccess(resp);
+        var sw = Stopwatch.StartNew();
+        using var resp = await SendAsync(HttpMethod.Get, url, ct);
+        await EnsureSuccess("GET", url, resp, ct, sw);
         return (await resp.Content.ReadFromJsonAsync<List<SearchPostResult>>(JsonOptions, ct)) ?? [];
     }
 
-    private static async Task EnsureSuccess(HttpResponseMessage resp)
+    private async Task<HttpResponseMessage> SendAsync(HttpMethod method, string url, CancellationToken ct)
+    {
+        try
+        {
+            var req = new HttpRequestMessage(method, url);
+            return await _http.SendAsync(req, ct);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error($"{method.Method} {url} failed", ex);
+            throw;
+        }
+    }
+
+    private static async Task EnsureSuccess(string method, string url, HttpResponseMessage resp, CancellationToken ct, Stopwatch? sw = null)
     {
         if (resp.IsSuccessStatusCode)
         {
             return;
         }
-        var body = await resp.Content.ReadAsStringAsync();
+        var body = await ReadBodySafe(resp, ct);
+        if (sw != null)
+        {
+            AppLog.Http(method, url, (int)resp.StatusCode, sw.Elapsed, body);
+        }
         throw new HttpRequestException($"HTTP {(int)resp.StatusCode}: {body}");
+    }
+
+    private static async Task<string> ReadBodySafe(HttpResponseMessage resp, CancellationToken ct)
+    {
+        try
+        {
+            var body = await resp.Content.ReadAsStringAsync(ct);
+            body = body.Trim();
+            if (body.Length > 2048)
+            {
+                body = body[..2048] + "...(truncated)";
+            }
+            return body;
+        }
+        catch
+        {
+            return "<failed to read body>";
+        }
     }
 }

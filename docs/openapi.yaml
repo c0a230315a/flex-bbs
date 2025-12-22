@@ -1,0 +1,697 @@
+openapi: 3.0.3
+info:
+  title: Flex BBS HTTP API
+  version: 1.0.0
+servers:
+  - url: http://127.0.0.1:8080
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      responses:
+        "200":
+          description: OK
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/v1/boards:
+    get:
+      summary: List boards
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BoardItem"
+        "500":
+          $ref: "#/components/responses/ErrorResponse"
+
+  /api/v1/boards/{boardId}:
+    get:
+      summary: Get board by ID
+      parameters:
+        - name: boardId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardItem"
+        "404":
+          $ref: "#/components/responses/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/ErrorResponse"
+
+  /api/v1/boards/{boardId}/threads:
+    get:
+      summary: List threads in a board
+      parameters:
+        - name: boardId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            default: 50
+            minimum: 0
+            maximum: 200
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            default: 0
+            minimum: 0
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ThreadItem"
+        "404":
+          $ref: "#/components/responses/ErrorResponse"
+        "502":
+          $ref: "#/components/responses/ErrorResponse"
+
+  /api/v1/threads/{threadId}:
+    get:
+      summary: Get thread by ID
+      parameters:
+        - name: threadId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ThreadResponse"
+        "404":
+          $ref: "#/components/responses/ErrorResponse"
+        "502":
+          $ref: "#/components/responses/ErrorResponse"
+
+  /api/v1/threads:
+    post:
+      summary: Create thread
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateThreadRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateThreadResponse"
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/ErrorResponse"
+        "502":
+          $ref: "#/components/responses/ErrorResponse"
+
+  /api/v1/posts:
+    post:
+      summary: Add post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddPostRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddPostResponse"
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/ErrorResponse"
+        "502":
+          $ref: "#/components/responses/ErrorResponse"
+
+  /api/v1/posts/{postCid}/edit:
+    post:
+      summary: Edit post
+      parameters:
+        - name: postCid
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EditPostRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EditPostResponse"
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/ErrorResponse"
+        "502":
+          $ref: "#/components/responses/ErrorResponse"
+
+  /api/v1/posts/{postCid}/tombstone:
+    post:
+      summary: Tombstone post
+      parameters:
+        - name: postCid
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TombstonePostRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TombstonePostResponse"
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/ErrorResponse"
+        "502":
+          $ref: "#/components/responses/ErrorResponse"
+
+  /api/v1/search/posts:
+    get:
+      summary: Search posts (indexer/full roles)
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: boardId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: author
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: until
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            default: 50
+            minimum: 0
+            maximum: 200
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            default: 0
+            minimum: 0
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SearchPostResult"
+        "501":
+          $ref: "#/components/responses/ErrorResponse"
+        "502":
+          $ref: "#/components/responses/ErrorResponse"
+
+components:
+  responses:
+    ErrorResponse:
+      description: Error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    PostBody:
+      type: object
+      additionalProperties: false
+      properties:
+        format:
+          type: string
+        content:
+          type: string
+      required:
+        - format
+        - content
+
+    Attachment:
+      type: object
+      additionalProperties: false
+      properties:
+        cid:
+          type: string
+        mime:
+          type: string
+      required:
+        - cid
+        - mime
+
+    Post:
+      type: object
+      additionalProperties: false
+      properties:
+        version:
+          type: integer
+          format: int32
+        type:
+          type: string
+        postCid:
+          type: string
+          nullable: true
+        threadId:
+          type: string
+        parentPostCid:
+          type: string
+          nullable: true
+        authorPubKey:
+          type: string
+        displayName:
+          type: string
+        body:
+          $ref: "#/components/schemas/PostBody"
+        attachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Attachment"
+        createdAt:
+          type: string
+        editedAt:
+          type: string
+          nullable: true
+        meta:
+          type: object
+          additionalProperties: true
+        signature:
+          type: string
+      required:
+        - version
+        - type
+        - threadId
+        - authorPubKey
+        - displayName
+        - body
+        - attachments
+        - createdAt
+        - meta
+        - signature
+
+    ThreadMeta:
+      type: object
+      additionalProperties: false
+      properties:
+        version:
+          type: integer
+          format: int32
+        type:
+          type: string
+        threadId:
+          type: string
+        boardId:
+          type: string
+        title:
+          type: string
+        rootPostCid:
+          type: string
+        createdAt:
+          type: string
+        createdBy:
+          type: string
+        meta:
+          type: object
+          additionalProperties: true
+        signature:
+          type: string
+      required:
+        - version
+        - type
+        - threadId
+        - boardId
+        - title
+        - rootPostCid
+        - createdAt
+        - createdBy
+        - meta
+        - signature
+
+    BoardMeta:
+      type: object
+      additionalProperties: false
+      properties:
+        version:
+          type: integer
+          format: int32
+        type:
+          type: string
+        boardId:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        logHeadCid:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        createdBy:
+          type: string
+        signature:
+          type: string
+      required:
+        - version
+        - type
+        - boardId
+        - title
+        - description
+        - createdAt
+        - createdBy
+        - signature
+
+    BoardItem:
+      type: object
+      additionalProperties: false
+      properties:
+        boardMetaCid:
+          type: string
+        board:
+          $ref: "#/components/schemas/BoardMeta"
+      required:
+        - boardMetaCid
+        - board
+
+    ThreadItem:
+      type: object
+      additionalProperties: false
+      properties:
+        threadId:
+          type: string
+        threadMetaCid:
+          type: string
+        thread:
+          $ref: "#/components/schemas/ThreadMeta"
+      required:
+        - threadId
+        - threadMetaCid
+        - thread
+
+    ThreadPostItem:
+      type: object
+      additionalProperties: false
+      properties:
+        cid:
+          type: string
+        post:
+          $ref: "#/components/schemas/Post"
+        tombstoned:
+          type: boolean
+        tombstoneReason:
+          type: string
+          nullable: true
+      required:
+        - cid
+        - post
+        - tombstoned
+
+    ThreadResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        threadMetaCid:
+          type: string
+        threadMeta:
+          $ref: "#/components/schemas/ThreadMeta"
+        posts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ThreadPostItem"
+      required:
+        - threadMetaCid
+        - threadMeta
+        - posts
+
+    CreateThreadRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        boardId:
+          type: string
+        title:
+          type: string
+        displayName:
+          type: string
+        body:
+          $ref: "#/components/schemas/PostBody"
+        attachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Attachment"
+        threadMeta:
+          type: object
+          additionalProperties: true
+        postMeta:
+          type: object
+          additionalProperties: true
+        authorPrivKey:
+          type: string
+      required:
+        - boardId
+        - title
+        - displayName
+        - body
+        - attachments
+        - threadMeta
+        - postMeta
+        - authorPrivKey
+
+    CreateThreadResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        threadId:
+          type: string
+        rootPostCid:
+          type: string
+        boardLogCid:
+          type: string
+        boardMetaCid:
+          type: string
+        threadMeta:
+          $ref: "#/components/schemas/ThreadMeta"
+      required:
+        - threadId
+        - rootPostCid
+        - boardLogCid
+        - boardMetaCid
+        - threadMeta
+
+    AddPostRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        threadId:
+          type: string
+        parentPostCid:
+          type: string
+          nullable: true
+        displayName:
+          type: string
+        body:
+          $ref: "#/components/schemas/PostBody"
+        attachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Attachment"
+        meta:
+          type: object
+          additionalProperties: true
+        authorPrivKey:
+          type: string
+      required:
+        - threadId
+        - displayName
+        - body
+        - attachments
+        - meta
+        - authorPrivKey
+
+    AddPostResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        postCid:
+          type: string
+        boardLogCid:
+          type: string
+        boardMetaCid:
+          type: string
+      required:
+        - postCid
+        - boardLogCid
+        - boardMetaCid
+
+    EditPostRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        body:
+          $ref: "#/components/schemas/PostBody"
+        displayName:
+          type: string
+          nullable: true
+        authorPrivKey:
+          type: string
+      required:
+        - body
+        - authorPrivKey
+
+    EditPostResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        oldPostCid:
+          type: string
+        newPostCid:
+          type: string
+        boardLogCid:
+          type: string
+        boardMetaCid:
+          type: string
+      required:
+        - oldPostCid
+        - newPostCid
+        - boardLogCid
+        - boardMetaCid
+
+    TombstonePostRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          nullable: true
+        authorPrivKey:
+          type: string
+      required:
+        - authorPrivKey
+
+    TombstonePostResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        targetPostCid:
+          type: string
+        boardLogCid:
+          type: string
+        boardMetaCid:
+          type: string
+      required:
+        - targetPostCid
+        - boardLogCid
+        - boardMetaCid
+
+    SearchPostResult:
+      type: object
+      additionalProperties: false
+      properties:
+        postCid:
+          type: string
+        threadId:
+          type: string
+        boardId:
+          type: string
+        authorPubKey:
+          type: string
+        displayName:
+          type: string
+        bodyFormat:
+          type: string
+        bodyContent:
+          type: string
+        createdAt:
+          type: string
+        editedAt:
+          type: string
+          nullable: true
+      required:
+        - postCid
+        - threadId
+        - boardId
+        - authorPubKey
+        - displayName
+        - bodyFormat
+        - bodyContent
+        - createdAt
+

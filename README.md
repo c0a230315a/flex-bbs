@@ -148,4 +148,7 @@ dotnet run --project src/BbsClient -- boards
 
 - On first run, `flexible-ipfs-base/run.sh` and `run.bat` auto‑create `providers/`, `getdata/`, and `attr`.
 - To avoid editing `flexible-ipfs-base/kadrtt.properties` for every environment, override `ipfs.endpoint` via `FLEXIPFS_GW_ENDPOINT` (or `bbs-node --flexipfs-gw-endpoint ...`) when starting Flexible‑IPFS.
+- On LANs, you can enable mDNS discovery for the gw endpoint via `bbs-node --flexipfs-mdns=true` (advertise by also setting `--flexipfs-gw-endpoint ...`).
+- Logs are written under `<data-dir>/logs/` (e.g. `bbs-client.log`, `bbs-node.log`, `flex-ipfs.log`).
+- The HTTP API contract is in `docs/openapi.yaml` and C# DTOs can be regenerated via `scripts/generate-bbsclient-models.sh`.
 - The Go backend exposes the BBS HTTP API under `/api/v1` (see `docs/flexible_ipfs_bbs_仕様書.md` for semantics).
