@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -27,7 +28,58 @@ func New(baseURL string) *Client {
 	}
 }
 
+func validateAttr(attr string) error {
+	attr = strings.TrimSpace(attr)
+	if attr == "" {
+		return fmt.Errorf("attr is empty")
+	}
+	i := strings.IndexByte(attr, '_')
+	if i <= 0 || i >= len(attr)-1 {
+		return fmt.Errorf("attr %q must be name_value", attr)
+	}
+	if strings.Contains(attr[i+1:], "_") {
+		return fmt.Errorf("attr %q must contain a single '_' separator", attr)
+	}
+	if _, err := strconv.Atoi(attr[i+1:]); err != nil {
+		return fmt.Errorf("attr %q value must be an integer: %w", attr, err)
+	}
+	return nil
+}
+
+func validateTag(tag string) error {
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		return fmt.Errorf("tag is empty")
+	}
+	i := strings.IndexByte(tag, '_')
+	if i <= 0 || i >= len(tag)-1 {
+		return fmt.Errorf("tag %q must be name_value", tag)
+	}
+	return nil
+}
+
 func (c *Client) PutValueWithAttr(ctx context.Context, value string, attrs, tags []string) (string, error) {
+	for _, a := range attrs {
+		if err := validateAttr(a); err != nil {
+			return "", err
+		}
+	}
+	for _, t := range tags {
+		if err := validateTag(t); err != nil {
+			return "", err
+		}
+	}
+
+	// Flexible-IPFS currently crashes on put when its peer list is empty, returning HTTP 400 with no body.
+	// Avoid triggering that by failing fast when peerlist is empty.
+	peers, perr := c.PeerList(ctx)
+	if perr != nil {
+		return "", perr
+	}
+	if strings.TrimSpace(peers) == "" {
+		return "", fmt.Errorf("flexipfs has no peers (peerlist is empty). Configure a gw endpoint via FLEXIPFS_GW_ENDPOINT / --flexipfs-gw-endpoint or enable --flexipfs-mdns")
+	}
+
 	q := url.Values{}
 	q.Set("value", value)
 	if len(attrs) > 0 {
@@ -42,7 +94,15 @@ func (c *Client) PutValueWithAttr(ctx context.Context, value string, attrs, tags
 		return "", err
 	}
 	if status < 200 || status >= 300 {
-		return "", httpError(status, body, header, trailer)
+		httpErr := httpError(status, body, header, trailer)
+		if status == http.StatusBadRequest && len(bytes.TrimSpace(body)) == 0 {
+			// Flexible-IPFS can return HTTP 400 with an empty body when it has no peers.
+			if peers, perr := c.PeerList(ctx); perr == nil && strings.TrimSpace(peers) == "" {
+				return "", fmt.Errorf("flexipfs put failed: no peers connected (peerlist is empty). Configure a gw endpoint via FLEXIPFS_GW_ENDPOINT / --flexipfs-gw-endpoint or enable --flexipfs-mdns: %w", httpErr)
+			}
+			return "", fmt.Errorf("flexipfs put failed: http 400 with empty body (check flex-ipfs.log): %w", httpErr)
+		}
+		return "", httpErr
 	}
 	return extractCID(body)
 }
@@ -61,6 +121,17 @@ func (c *Client) GetValue(ctx context.Context, cid string) ([]byte, error) {
 }
 
 func (c *Client) GetByAttrs(ctx context.Context, attrs, tags []string, showAll bool) ([]string, error) {
+	for _, a := range attrs {
+		if err := validateAttr(a); err != nil {
+			return nil, err
+		}
+	}
+	for _, t := range tags {
+		if err := validateTag(t); err != nil {
+			return nil, err
+		}
+	}
+
 	q := url.Values{}
 	if len(attrs) > 0 {
 		q.Set("attrs", strings.Join(attrs, ","))

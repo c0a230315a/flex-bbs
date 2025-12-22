@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -52,6 +54,8 @@ func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride, gwEndpoin
 
 	// Best-effort wait for API to come up
 	waitForFlexIPFS(ctx, baseURL, 20*time.Second)
+	// Best-effort wait for bootstrap to populate peers (prevents early put failures).
+	waitForFlexIPFSPeers(ctx, baseURL, 5*time.Second)
 	return proc, nil
 }
 
@@ -334,6 +338,33 @@ func waitForFlexIPFS(ctx context.Context, baseURL string, timeout time.Duration)
 		time.Sleep(500 * time.Millisecond)
 	}
 	log.Printf("flex-ipfs API not ready after %s", timeout)
+}
+
+func waitForFlexIPFSPeers(ctx context.Context, baseURL string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	endpoint := strings.TrimRight(baseURL, "/") + "/dht/peerlist"
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	for time.Now().Before(deadline) {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+		resp, err := client.Do(req)
+		if err == nil && resp != nil {
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+			_ = resp.Body.Close()
+			if readErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 500 {
+				var s string
+				if jsonErr := json.Unmarshal(bytes.TrimSpace(body), &s); jsonErr == nil {
+					if strings.TrimSpace(s) != "" {
+						return
+					}
+				} else if strings.TrimSpace(string(body)) != "" {
+					return
+				}
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	log.Printf("flex-ipfs peers not discovered after %s", timeout)
 }
 
 func isFlexIPFSUp(ctx context.Context, baseURL string) bool {

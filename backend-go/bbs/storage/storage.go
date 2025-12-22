@@ -10,10 +10,12 @@ import (
 )
 
 const (
-	AttrObjTypeBoardMetaV1     = "objtype_boardmeta_version_1"
-	AttrObjTypeThreadMetaV1    = "objtype_threadmeta_version_1"
-	AttrObjTypeBoardLogEntryV1 = "objtype_boardlogentry_version_1"
-	AttrObjTypePostV1          = "objtype_post_version_1"
+	// Flexible-IPFS expects attrs in the form "name_<int>" (name_value).
+	// Values with multiple '_' (e.g. "objtype_boardmeta_version_1") cause server-side parse errors.
+	AttrObjTypeBoardMetaV1     = "boardmeta_1"
+	AttrObjTypeThreadMetaV1    = "threadmeta_1"
+	AttrObjTypeBoardLogEntryV1 = "boardlogentry_1"
+	AttrObjTypePostV1          = "post_1"
 )
 
 type Storage struct {

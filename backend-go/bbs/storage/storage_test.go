@@ -26,6 +26,8 @@ func TestSaveThreadMeta_DoublePutTags(t *testing.T) {
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/v0/dht/peerlist":
+			_, _ = w.Write([]byte(`"peer1"`))
 		case "/api/v0/dht/putvaluewithattr":
 			q := r.URL.Query()
 			mu.Lock()
@@ -72,9 +74,9 @@ func TestSaveThreadMeta_DoublePutTags(t *testing.T) {
 		t.Fatalf("put call count: %d", len(calls))
 	}
 
-	if calls[0].attrs != "objtype_threadmeta_version_1" || calls[1].attrs != "objtype_threadmeta_version_1" {
-		t.Fatalf("attrs mismatch: %#v", calls)
-	}
+		if calls[0].attrs != "threadmeta_1" || calls[1].attrs != "threadmeta_1" {
+			t.Fatalf("attrs mismatch: %#v", calls)
+		}
 	if calls[0].tags != "board_bbs.general" {
 		t.Fatalf("first tags mismatch: %q", calls[0].tags)
 	}

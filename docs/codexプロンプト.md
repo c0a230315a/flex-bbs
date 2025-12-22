@@ -162,13 +162,13 @@ All BBS objects are stored via `putvaluewithattr?value=...`.
 Use the following conventions:
 
 - BoardMeta:
-  - attrs: `objtype_boardmeta_version_1`
+  - attrs: `boardmeta_1`
   - tags:  `board_<boardId>`
 - ThreadMeta:
-  - attrs: `objtype_threadmeta_version_1`
+  - attrs: `threadmeta_1`
   - tags:  `board_<boardId>-thread_<threadId>`
 - BoardLogEntry:
-  - attrs: `objtype_boardlogentry_version_1`
+  - attrs: `boardlogentry_1`
   - tags:  `board_<boardId>-thread_<threadId>`
 
 To retrieve:
