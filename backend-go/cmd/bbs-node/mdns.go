@@ -14,7 +14,7 @@ import (
 
 const (
 	defaultFlexIPFSMdnsService = "_flexipfs-gw._tcp"
-	defaultFlexIPFSMdnsTimeout = 3 * time.Second
+	defaultFlexIPFSMdnsTimeout = 10 * time.Second
 )
 
 func resolveFlexIPFSGWEndpoint(flagValue string) (endpoint string, explicit bool) {

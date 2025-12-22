@@ -83,6 +83,24 @@ CLI 例:
 ./bbs-client threads bbs.general
 ```
 
+## LAN / 2台構成（ピア接続）
+
+Flexible‑IPFS は `putvaluewithattr` のために **最低 1 つのピア接続**が必要です（`dht/peerlist` 参照）。LAN 上では `ipfs.endpoint` を手動設定するか、mDNS で配布してピアを接続します。
+
+1. A 端末で `bbs-node` を `indexer` または `full` で起動します。
+2. A 端末で PeerID を取得します:
+   - `curl -X POST http://127.0.0.1:5001/api/v0/id`（`ID` を見る）
+   - または `flexible-ipfs-base/.ipfs/config` の `Identity.PeerID`
+3. B 端末で A 端末を指す gw endpoint を設定します（形式: `/ip4/<AのLAN IP>/tcp/4001/ipfs/<PeerID>`）:
+   - 環境変数: `FLEXIPFS_GW_ENDPOINT=...`
+   - TUI: Settings → Flexible‑IPFS → `ipfs.endpoint override`
+   - CLI: `bbs-node --flexipfs-gw-endpoint ...`
+4.（任意）mDNS:
+   - 広告側: `--flexipfs-mdns=true` に加えて `--flexipfs-gw-endpoint ...`（または `FLEXIPFS_GW_ENDPOINT`）も指定
+   - 探索側: `--flexipfs-mdns=true` を指定し、gw endpoint は空のまま
+5. 接続確認:
+   - `curl -X POST http://127.0.0.1:5001/api/v0/dht/peerlist` が `""` 以外になれば OK
+
 ## ビルド版（git clone したソース）での環境構築と動かし方（WSL）
 
 ### 前提
@@ -147,8 +165,12 @@ dotnet build src/BbsClient/BbsClient.csproj -c Release
 ## 補足
 
 - 初回起動時に必要な `providers/`, `getdata/`, `attr` は `run.sh` / `run.bat` が自動生成します。
-- `kadrtt.properties` の `ipfs.endpoint` を毎回手で編集せずに済むよう、起動時に `FLEXIPFS_GW_ENDPOINT`（または `bbs-node --flexipfs-gw-endpoint ...`）で上書きできます。
-- 学内LANなどでは `bbs-node --flexipfs-mdns=true` により mDNS で gw endpoint を探索できます（広告する側は `--flexipfs-gw-endpoint ...` も指定）。
+- `flexipfs-base-url` は **HTTP API** です（デフォルト: `http://127.0.0.1:5001/api/v0`）。`ipfs.endpoint` とは別物です。
+- `ipfs.endpoint`（gw endpoint）はピア接続/ブートストラップ用の **libp2p multiaddr** です（形式: `/ip4/<ip>/tcp/4001/ipfs/<PeerID>`）。
+- `curl -X POST http://127.0.0.1:5001/api/v0/dht/peerlist` が `""` の場合、Flexible‑IPFS はピア未接続のため `Create board` 等が失敗します。
+- `ipfs.endpoint` は `flexible-ipfs-base/kadrtt.properties` を編集するか、起動時に `FLEXIPFS_GW_ENDPOINT`（または `bbs-node --flexipfs-gw-endpoint ...`）で上書きできます。
+- 学内 LAN などでは `bbs-node --flexipfs-mdns=true` により mDNS で gw endpoint を探索できます（LAN に広告するには `--flexipfs-gw-endpoint ...` または `FLEXIPFS_GW_ENDPOINT` も指定）。
+- mDNS は UDP マルチキャスト（一般に 5353 番）と、Flex‑IPFS の swarm ポート（一般に TCP 4001 番）がファイアウォールで許可されている必要があります。
 - ログは基本的に `<data-dir>/logs/` 配下に出力します（例: `bbs-client.log`, `bbs-node.log`, `flex-ipfs.log`）。
 - HTTP API の契約は `docs/openapi.yaml` にあり、C# DTO は `scripts/generate-bbsclient-models.sh` で再生成できます。
 - Go バックエンドは `/api/v1` で BBS API を提供します（動作仕様は `docs/flexible_ipfs_bbs_仕様書.md` を参照）。

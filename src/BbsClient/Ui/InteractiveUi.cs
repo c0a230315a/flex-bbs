@@ -264,6 +264,7 @@ public static class InteractiveUi
             "--author-priv-key", key.Priv,
             "--flexipfs-base-url", cfg.FlexIpfsBaseUrl,
             $"--autostart-flexipfs={cfg.AutostartFlexIpfs.ToString().ToLowerInvariant()}",
+            $"--flexipfs-mdns={cfg.FlexIpfsMdns.ToString().ToLowerInvariant()}",
             "--data-dir", cfg.DataDir,
         };
         if (!string.IsNullOrWhiteSpace(cfg.FlexIpfsBaseDir))
@@ -1221,7 +1222,7 @@ public static class InteractiveUi
 
         var currentGw = cfg.FlexIpfsGwEndpoint ?? "<none>";
         var gwInput = AnsiConsole.Prompt(
-            new TextPrompt<string>($"ipfs.endpoint override (blank = none) [grey](current: {EscapePrompt(currentGw)})[/]")
+            new TextPrompt<string>($"ipfs.endpoint override (blank = none) [grey](e.g. /ip4/192.168.0.10/tcp/4001/ipfs/<PeerID>, current: {EscapePrompt(currentGw)})[/]")
                 .AllowEmpty()
         );
         var gw = string.IsNullOrWhiteSpace(gwInput) ? null : gwInput.Trim();

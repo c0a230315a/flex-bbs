@@ -83,6 +83,24 @@ CLI examples:
 ./bbs-client threads bbs.general
 ```
 
+## LAN / 2-machine setup (peer connectivity)
+
+Flexible‑IPFS needs at least 1 peer connection (see `dht/peerlist`). On a LAN, you can connect peers either by configuring `ipfs.endpoint` manually, or by using mDNS.
+
+1. Start one node as `indexer` or `full` on Machine A.
+2. On Machine A, get the PeerID:
+   - `curl -X POST http://127.0.0.1:5001/api/v0/id` (look for `ID`)
+   - or open `flexible-ipfs-base/.ipfs/config` and read `Identity.PeerID`
+3. On Machine B, set the gw endpoint to Machine A (format: `/ip4/<A_LAN_IP>/tcp/4001/ipfs/<PeerID>`):
+   - Env: `FLEXIPFS_GW_ENDPOINT=...`
+   - TUI: Settings → Flexible‑IPFS → `ipfs.endpoint override`
+   - CLI: `bbs-node --flexipfs-gw-endpoint ...`
+4. (Optional) mDNS:
+   - Advertiser: run with `--flexipfs-mdns=true` and also set `--flexipfs-gw-endpoint ...`
+   - Discoverer: run with `--flexipfs-mdns=true` and leave the gw endpoint blank
+5. Verify peers:
+   - `curl -X POST http://127.0.0.1:5001/api/v0/dht/peerlist` should be non-empty (not `""`)
+
 ## Build from source (WSL / Ubuntu)
 
 ### Prerequisites
@@ -147,8 +165,12 @@ dotnet run --project src/BbsClient -- boards
 ## Notes
 
 - On first run, `flexible-ipfs-base/run.sh` and `run.bat` auto‑create `providers/`, `getdata/`, and `attr`.
-- To avoid editing `flexible-ipfs-base/kadrtt.properties` for every environment, override `ipfs.endpoint` via `FLEXIPFS_GW_ENDPOINT` (or `bbs-node --flexipfs-gw-endpoint ...`) when starting Flexible‑IPFS.
-- On LANs, you can enable mDNS discovery for the gw endpoint via `bbs-node --flexipfs-mdns=true` (advertise by also setting `--flexipfs-gw-endpoint ...`).
+- `flexipfs-base-url` is the local **HTTP API** (default: `http://127.0.0.1:5001/api/v0`). This is **not** the same as `ipfs.endpoint`.
+- `ipfs.endpoint` (aka "gw endpoint") is a **libp2p multiaddr** used for peer connectivity/bootstrapping (format: `/ip4/<ip>/tcp/4001/ipfs/<PeerID>`).
+- Flexible‑IPFS needs at least 1 peer connection for `putvaluewithattr`. If `curl -X POST http://127.0.0.1:5001/api/v0/dht/peerlist` returns `""`, flows like `Create board` will fail until peers are connected.
+- You can set `ipfs.endpoint` either by editing `flexible-ipfs-base/kadrtt.properties`, or by overriding it on autostart via `FLEXIPFS_GW_ENDPOINT` (or `bbs-node --flexipfs-gw-endpoint ...`).
+- On LANs, enable mDNS discovery via `bbs-node --flexipfs-mdns=true`. To advertise an endpoint on the LAN, also set `--flexipfs-gw-endpoint ...` (or `FLEXIPFS_GW_ENDPOINT`).
+- mDNS requires UDP multicast (typically port 5353) and the Flex‑IPFS swarm port (typically TCP 4001) to be allowed by your firewall.
 - Logs are written under `<data-dir>/logs/` (e.g. `bbs-client.log`, `bbs-node.log`, `flex-ipfs.log`).
 - The HTTP API contract is in `docs/openapi.yaml` and C# DTOs can be regenerated via `scripts/generate-bbsclient-models.sh`.
 - The Go backend exposes the BBS HTTP API under `/api/v1` (see `docs/flexible_ipfs_bbs_仕様書.md` for semantics).

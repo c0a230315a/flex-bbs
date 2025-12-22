@@ -34,6 +34,14 @@ func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride, gwEndpoin
 	// don't start a second instance (avoids port conflicts).
 	if isFlexIPFSUp(ctx, baseURL) {
 		log.Printf("flex-ipfs already running at %s", baseURL)
+		// Best-effort: if we have a gw endpoint configured (or present in kadrtt.properties),
+		// proactively connect so peerlist isn't empty for subsequent operations (e.g. Create Board).
+		if endpoint := resolveFlexIPFSConnectEndpoint(baseDirOverride, gwEndpointOverride); endpoint != "" {
+			if err := flexIPFSSwarmConnect(ctx, baseURL, endpoint); err != nil {
+				log.Printf("flex-ipfs swarm/connect failed: %v", err)
+			}
+			waitForFlexIPFSPeers(ctx, baseURL, 5*time.Second)
+		}
 		return nil, nil
 	}
 
@@ -54,6 +62,12 @@ func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride, gwEndpoin
 
 	// Best-effort wait for API to come up
 	waitForFlexIPFS(ctx, baseURL, 20*time.Second)
+	// Best-effort explicit connect to a configured gw endpoint (if any).
+	if endpoint := resolveFlexIPFSConnectEndpoint(flexBaseDir, gwEndpointOverride); endpoint != "" {
+		if err := flexIPFSSwarmConnect(ctx, baseURL, endpoint); err != nil {
+			log.Printf("flex-ipfs swarm/connect failed: %v", err)
+		}
+	}
 	// Best-effort wait for bootstrap to populate peers (prevents early put failures).
 	waitForFlexIPFSPeers(ctx, baseURL, 5*time.Second)
 	return proc, nil
@@ -320,6 +334,51 @@ func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
 	return nil
 }
 
+func resolveFlexIPFSConnectEndpoint(baseDirOrOverride string, gwEndpointOverride string) string {
+	if v := strings.TrimSpace(gwEndpointOverride); v != "" {
+		return v
+	}
+
+	// Allow manual edits in flexible-ipfs-base/kadrtt.properties to work without requiring
+	// passing --flexipfs-gw-endpoint every time.
+	baseDir := strings.TrimSpace(baseDirOrOverride)
+	if baseDir == "" || !dirExists(baseDir) {
+		if bd, _, err := resolveFlexDirs(baseDirOrOverride); err == nil && bd != "" {
+			baseDir = bd
+		}
+	}
+	if baseDir == "" {
+		return ""
+	}
+	if v, err := readKadrttGWEndpoint(baseDir); err == nil {
+		return v
+	}
+	return ""
+}
+
+func readKadrttGWEndpoint(flexBaseDir string) (string, error) {
+	propsPath := filepath.Join(flexBaseDir, "kadrtt.properties")
+	b, err := os.ReadFile(propsPath)
+	if err != nil {
+		return "", err
+	}
+	for _, raw := range strings.Split(string(b), "\n") {
+		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
+			continue
+		}
+		if !strings.HasPrefix(line, "ipfs.endpoint") {
+			continue
+		}
+		if idx := strings.IndexAny(line, "=:"); idx >= 0 {
+			if v := strings.TrimSpace(line[idx+1:]); v != "" {
+				return v, nil
+			}
+		}
+	}
+	return "", nil
+}
+
 func waitForFlexIPFS(ctx context.Context, baseURL string, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	endpoint := strings.TrimRight(baseURL, "/") + "/dht/peerlist"
@@ -338,6 +397,37 @@ func waitForFlexIPFS(ctx context.Context, baseURL string, timeout time.Duration)
 		time.Sleep(500 * time.Millisecond)
 	}
 	log.Printf("flex-ipfs API not ready after %s", timeout)
+}
+
+func flexIPFSSwarmConnect(ctx context.Context, baseURL, addr string) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return nil
+	}
+	u := strings.TrimRight(baseURL, "/") + "/swarm/connect"
+	q := url.Values{}
+	q.Set("arg", addr)
+	u += "?" + q.Encode()
+
+	client := &http.Client{Timeout: 8 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	msg := strings.TrimSpace(string(body))
+	if msg == "" {
+		msg = resp.Status
+	}
+	return fmt.Errorf("flex-ipfs swarm/connect http %d: %s", resp.StatusCode, msg)
 }
 
 func waitForFlexIPFSPeers(ctx context.Context, baseURL string, timeout time.Duration) {
