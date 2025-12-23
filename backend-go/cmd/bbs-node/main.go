@@ -120,6 +120,11 @@ func main() {
 	}
 
 	flex := flexipfs.New(*flexIPFSBase)
+	if isLocalBaseURL(*flexIPFSBase) {
+		if baseDir, _, err := resolveFlexDirs(*flexIPFSBaseDir); err == nil && baseDir != "" {
+			flex.BaseDir = baseDir
+		}
+	}
 	st := storage.New(flex)
 
 	var ix *indexer.Indexer
@@ -268,6 +273,11 @@ func runInitBoard(args []string) int {
 	}
 
 	flex := flexipfs.New(*flexBase)
+	if isLocalBaseURL(*flexBase) {
+		if baseDir, _, err := resolveFlexDirs(*flexBaseDir); err == nil && baseDir != "" {
+			flex.BaseDir = baseDir
+		}
+	}
 	st := storage.New(flex)
 	boards := config.NewBoardsStore(boardsPath)
 	_ = boards.Load()

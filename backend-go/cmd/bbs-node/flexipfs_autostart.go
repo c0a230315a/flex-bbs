@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -180,6 +181,9 @@ func startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride, logDir string) (*fl
 	if err := maybeOverrideKadrttGWEndpoint(flexBaseDir, gwEndpointOverride); err != nil {
 		return nil, err
 	}
+	if err := ensureKadrttGlobalIP(flexBaseDir); err != nil {
+		return nil, err
+	}
 
 	// Keep stdin open to avoid APIServer exiting on EOF.
 	stdinR, stdinW := io.Pipe()
@@ -253,6 +257,58 @@ func isCharDevice(f *os.File) bool {
 	return (st.Mode() & os.ModeCharDevice) != 0
 }
 
+func extractIP4FromMultiaddr(addr string) string {
+	const prefix = "/ip4/"
+	i := strings.Index(addr, prefix)
+	if i < 0 {
+		return ""
+	}
+	rest := addr[i+len(prefix):]
+	j := strings.IndexByte(rest, '/')
+	if j <= 0 {
+		return ""
+	}
+	ip := rest[:j]
+	if net.ParseIP(ip) == nil {
+		return ""
+	}
+	return ip
+}
+
+func detectLocalIP4() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil {
+				continue
+			}
+			ip = ip.To4()
+			if ip == nil || ip.IsLoopback() {
+				continue
+			}
+			return ip.String()
+		}
+	}
+	return ""
+}
+
 func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
 	endpoint = strings.TrimSpace(endpoint)
 	if endpoint == "" {
@@ -261,6 +317,11 @@ func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
 	if strings.ContainsAny(endpoint, "\r\n") {
 		return fmt.Errorf("FLEXIPFS_GW_ENDPOINT must be a single line")
 	}
+
+	// Kad.getGlobalIP() tries to fetch from checkip.amazonaws.com and only falls back to ipfs.globalip on failure.
+	// In containerized CI (2-node docker), the "global" IP is not routable between containers, so we also set
+	// ipfs.globalip to the endpoint's /ip4/ address when possible (the docker-internal IP).
+	globalIP := extractIP4FromMultiaddr(endpoint)
 
 	propsPath := filepath.Join(flexBaseDir, "kadrtt.properties")
 	b, err := os.ReadFile(propsPath)
@@ -274,11 +335,133 @@ func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
 		lineSep = "\r\n"
 	}
 
-	re := regexp.MustCompile(`^(\s*)ipfs\.endpoint(\s*[:=]).*$`)
+	reEndpoint := regexp.MustCompile(`^(\s*)ipfs\.endpoint(\s*[:=]).*$`)
+	reGlobalIP := regexp.MustCompile(`^(\s*)ipfs\.globalip(\s*[:=]).*$`)
 	parts := strings.SplitAfter(original, lineSep)
 
 	var out strings.Builder
-	out.Grow(len(original) + len(endpoint) + 32)
+	out.Grow(len(original) + len(endpoint) + len(globalIP) + 64)
+
+	replacedEndpoint := false
+	replacedGlobalIP := false
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		suffix := ""
+		line := part
+		if strings.HasSuffix(part, lineSep) {
+			suffix = lineSep
+			line = strings.TrimSuffix(part, lineSep)
+		}
+
+		trimLeft := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimLeft, "#") || strings.HasPrefix(trimLeft, "!") {
+			out.WriteString(line)
+			out.WriteString(suffix)
+			continue
+		}
+
+		if m := reEndpoint.FindStringSubmatch(line); m != nil {
+			out.WriteString(m[1])
+			out.WriteString("ipfs.endpoint")
+			out.WriteString(m[2])
+			out.WriteString(endpoint)
+			out.WriteString(suffix)
+			replacedEndpoint = true
+			continue
+		}
+		if globalIP != "" {
+			if m := reGlobalIP.FindStringSubmatch(line); m != nil {
+				out.WriteString(m[1])
+				out.WriteString("ipfs.globalip")
+				out.WriteString(m[2])
+				out.WriteString(globalIP)
+				out.WriteString(suffix)
+				replacedGlobalIP = true
+				continue
+			}
+		}
+
+		out.WriteString(line)
+		out.WriteString(suffix)
+	}
+
+	if !replacedEndpoint {
+		if !strings.HasSuffix(out.String(), lineSep) && out.Len() > 0 {
+			out.WriteString(lineSep)
+		}
+		out.WriteString("ipfs.endpoint=")
+		out.WriteString(endpoint)
+		out.WriteString(lineSep)
+	}
+	if globalIP != "" && !replacedGlobalIP {
+		if !strings.HasSuffix(out.String(), lineSep) && out.Len() > 0 {
+			out.WriteString(lineSep)
+		}
+		out.WriteString("ipfs.globalip=")
+		out.WriteString(globalIP)
+		out.WriteString(lineSep)
+	}
+
+	st, statErr := os.Stat(propsPath)
+	mode := os.FileMode(0o644)
+	if statErr == nil {
+		mode = st.Mode().Perm()
+	}
+	if err := os.WriteFile(propsPath, []byte(out.String()), mode); err != nil {
+		return err
+	}
+	if globalIP != "" {
+		log.Printf("flex-ipfs: set ipfs.endpoint=%s ipfs.globalip=%s (%s)", endpoint, globalIP, propsPath)
+	} else {
+		log.Printf("flex-ipfs: set ipfs.endpoint=%s (%s)", endpoint, propsPath)
+	}
+	return nil
+}
+
+func ensureKadrttGlobalIP(flexBaseDir string) error {
+	propsPath := filepath.Join(flexBaseDir, "kadrtt.properties")
+	b, err := os.ReadFile(propsPath)
+	if err != nil {
+		return err
+	}
+	original := string(b)
+
+	var existing string
+	for _, raw := range strings.Split(original, "\n") {
+		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
+			continue
+		}
+		if !strings.HasPrefix(line, "ipfs.globalip") {
+			continue
+		}
+		if idx := strings.IndexAny(line, "=:"); idx >= 0 {
+			existing = strings.TrimSpace(line[idx+1:])
+			break
+		}
+	}
+	if v := strings.TrimSpace(existing); v != "" && v != "null" {
+		return nil
+	}
+
+	ip := detectLocalIP4()
+	if ip == "" {
+		// Best-effort only; leave as-is.
+		return nil
+	}
+
+	lineSep := "\n"
+	if strings.Contains(original, "\r\n") {
+		lineSep = "\r\n"
+	}
+
+	reGlobalIP := regexp.MustCompile(`^(\s*)ipfs\.globalip(\s*[:=]).*$`)
+	parts := strings.SplitAfter(original, lineSep)
+
+	var out strings.Builder
+	out.Grow(len(original) + len(ip) + 64)
 
 	replaced := false
 	for _, part := range parts {
@@ -299,11 +482,11 @@ func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
 			continue
 		}
 
-		if m := re.FindStringSubmatch(line); m != nil {
+		if m := reGlobalIP.FindStringSubmatch(line); m != nil {
 			out.WriteString(m[1])
-			out.WriteString("ipfs.endpoint")
+			out.WriteString("ipfs.globalip")
 			out.WriteString(m[2])
-			out.WriteString(endpoint)
+			out.WriteString(ip)
 			out.WriteString(suffix)
 			replaced = true
 			continue
@@ -317,8 +500,8 @@ func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
 		if !strings.HasSuffix(out.String(), lineSep) && out.Len() > 0 {
 			out.WriteString(lineSep)
 		}
-		out.WriteString("ipfs.endpoint=")
-		out.WriteString(endpoint)
+		out.WriteString("ipfs.globalip=")
+		out.WriteString(ip)
 		out.WriteString(lineSep)
 	}
 
@@ -330,7 +513,7 @@ func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
 	if err := os.WriteFile(propsPath, []byte(out.String()), mode); err != nil {
 		return err
 	}
-	log.Printf("flex-ipfs: set ipfs.endpoint=%s (%s)", endpoint, propsPath)
+	log.Printf("flex-ipfs: set ipfs.globalip=%s (%s)", ip, propsPath)
 	return nil
 }
 

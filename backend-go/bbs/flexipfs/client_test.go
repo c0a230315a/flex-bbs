@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -47,6 +50,34 @@ func TestPutValueWithAttr_URLencodesValue(t *testing.T) {
 	}
 }
 
+func TestPutValueWithAttr_EncodesSpacesAsPercent20(t *testing.T) {
+	var rawQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v0/dht/peerlist":
+			_, _ = w.Write([]byte(`"peer1"`))
+		case "/api/v0/dht/putvaluewithattr":
+			rawQuery = r.URL.RawQuery
+			_ = json.NewEncoder(w).Encode(map[string]any{"CID_file": "baf_test"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New(srv.URL + "/api/v0")
+	_, err := c.PutValueWithAttr(context.Background(), `{"title":"CI Board"}`, []string{"post_1"}, []string{"board_bbs.general"})
+	if err != nil {
+		t.Fatalf("PutValueWithAttr: %v", err)
+	}
+	if strings.Contains(rawQuery, "+") {
+		t.Fatalf("raw query must not contain '+': %q", rawQuery)
+	}
+	if !strings.Contains(rawQuery, "%20") {
+		t.Fatalf("raw query should contain '%%20' for spaces: %q", rawQuery)
+	}
+}
+
 func TestGetValue_UnwrapsJSONString(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`"{\"hello\":\"world\"}"`))
@@ -60,6 +91,50 @@ func TestGetValue_UnwrapsJSONString(t *testing.T) {
 	}
 	if strings.TrimSpace(string(b)) != `{"hello":"world"}` {
 		t.Fatalf("unwrap mismatch: %q", string(b))
+	}
+}
+
+func TestGetValue_ReadsFromGetDataFile_OnDownloadingPlaceholder(t *testing.T) {
+	baseDir := t.TempDir()
+	getDataDir := filepath.Join(baseDir, "getdata")
+	if err := os.MkdirAll(getDataDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v0/dht/getvalue" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		cid := r.URL.Query().Get("cid")
+		if cid == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		if err := os.WriteFile(filepath.Join(getDataDir, cid+".txt"), []byte("Bhi"), 0o644); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(strconv.Quote("Downloading chunks for CID:" + cid)))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New(srv.URL + "/api/v0")
+	c.BaseDir = baseDir
+	b, err := c.GetValue(context.Background(), "baf_test")
+	if err != nil {
+		t.Fatalf("GetValue: %v", err)
+	}
+	if string(b) != "hi" {
+		t.Fatalf("value mismatch: %q", string(b))
+	}
+}
+
+func TestDecodeGetDataValue_StripsYLengthPrefix(t *testing.T) {
+	b := []byte{'Y', 0x00, 0x02, 'h', 'i'}
+	if got := string(decodeGetDataValue(b)); got != "hi" {
+		t.Fatalf("decode mismatch: %q", got)
 	}
 }
 
@@ -119,6 +194,48 @@ func TestPutValueWithAttr_RetriesOnHTTP400EmptyBody(t *testing.T) {
 	}
 	if putCalls != 3 {
 		t.Fatalf("expected 3 put attempts, got %d", putCalls)
+	}
+}
+
+func TestPutValueWithAttr_FallsBackWithoutAttrs_OnUnknownMultihashType(t *testing.T) {
+	var (
+		putCalls int
+		gotAttrs []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v0/dht/peerlist":
+			_, _ = w.Write([]byte(`"peer1"`))
+		case "/api/v0/dht/putvaluewithattr":
+			putCalls++
+			gotAttrs = append(gotAttrs, r.URL.Query().Get("attrs"))
+			if putCalls == 1 {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte("Unknown Multihash type: 0xffffffff"))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"CID_file": "baf_test",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New(srv.URL + "/api/v0")
+	cid, err := c.PutValueWithAttr(context.Background(), "v", []string{"post_1"}, []string{"board_bbs.general"})
+	if err != nil {
+		t.Fatalf("PutValueWithAttr: %v", err)
+	}
+	if cid != "baf_test" {
+		t.Fatalf("cid mismatch: %q", cid)
+	}
+	if putCalls != 2 {
+		t.Fatalf("expected 2 put attempts, got %d", putCalls)
+	}
+	if len(gotAttrs) != 2 || gotAttrs[0] == "" || gotAttrs[1] != "" {
+		t.Fatalf("attrs should be sent first then omitted: %#v", gotAttrs)
 	}
 }
 

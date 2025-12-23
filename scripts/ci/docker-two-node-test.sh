@@ -171,12 +171,12 @@ fi
 
 echo "Warming up DHT putvaluewithattr on client..." >&2
 for _ in {1..60}; do
-  if dc exec -T client curl -fsS -X POST "http://127.0.0.1:5001/api/v0/dht/putvaluewithattr?value=ping&attrs=ci_1&tags=ci_test" >/dev/null 2>&1; then
+  if dc exec -T client curl -fsS -X POST "http://127.0.0.1:5001/api/v0/dht/putvaluewithattr?value=ping&tags=ci_test" >/dev/null 2>&1; then
     break
   fi
   sleep 1
 done
-dc exec -T client curl -fsS -X POST "http://127.0.0.1:5001/api/v0/dht/putvaluewithattr?value=ping&attrs=ci_1&tags=ci_test" >/dev/null
+dc exec -T client curl -fsS -X POST "http://127.0.0.1:5001/api/v0/dht/putvaluewithattr?value=ping&tags=ci_test" >/dev/null
 
 echo "Creating board on client..." >&2
 key_json="$(dc exec -T client /app/bbs-node gen-key)"

@@ -4,12 +4,10 @@ FROM golang:1.22-bookworm AS builder
 WORKDIR /src
 
 COPY backend-go/go.mod backend-go/go.sum ./backend-go/
-RUN --mount=type=cache,target=/go/pkg/mod \
-    cd backend-go && go mod download
+RUN cd backend-go && go mod download
 
 COPY backend-go ./backend-go
-RUN --mount=type=cache,target=/go/pkg/mod \
-    cd backend-go && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/bbs-node ./cmd/bbs-node
+RUN cd backend-go && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/bbs-node ./cmd/bbs-node
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -31,4 +29,3 @@ RUN rm -rf /app/flexible-ipfs-base/.ipfs /app/flexible-ipfs-base/getdata /app/fl
 
 USER app
 ENTRYPOINT ["/app/bbs-node"]
-

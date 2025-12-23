@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +19,7 @@ import (
 
 type Client struct {
 	BaseURL    string
+	BaseDir    string
 	HTTPClient *http.Client
 }
 
@@ -105,6 +109,26 @@ func (c *Client) PutValueWithAttr(ctx context.Context, value string, attrs, tags
 		}
 
 		httpErr := httpError(status, body, header, trailer)
+
+		// Some Flexible-IPFS builds fail any put that includes attrs due to a manager lookup bug
+		// ("Unknown Multihash type: 0xffffffff"). Fall back to tags-only so core flows (like
+		// CI 2-node integration) can still function without attribute indexing.
+		if status == http.StatusBadRequest && len(attrs) > 0 && strings.Contains(strings.ToLower(httpErr.Error()), "unknown multihash type") {
+			qNoAttrs := url.Values{}
+			qNoAttrs.Set("value", value)
+			if len(tags) > 0 {
+				qNoAttrs.Set("tags", strings.Join(tags, ","))
+			}
+			b2, st2, h2, t2, err := c.postQuery(ctx, "/dht/putvaluewithattr", qNoAttrs)
+			if err != nil {
+				return "", err
+			}
+			if st2 >= 200 && st2 < 300 {
+				return extractCID(b2)
+			}
+			return "", httpError(st2, b2, h2, t2)
+		}
+
 		if status == http.StatusBadRequest && len(bytes.TrimSpace(body)) == 0 {
 			// Flexible-IPFS can return HTTP 400 with an empty body when it's still bootstrapping.
 			// It's also known to crash on put when its peer list is empty; fail fast in that case.
@@ -138,6 +162,10 @@ func (c *Client) PutValueWithAttr(ctx context.Context, value string, attrs, tags
 }
 
 func (c *Client) GetValue(ctx context.Context, cid string) ([]byte, error) {
+	if b, err := c.readGetDataValue(cid); err == nil {
+		return b, nil
+	}
+
 	q := url.Values{}
 	q.Set("cid", cid)
 	body, status, header, trailer, err := c.postQuery(ctx, "/dht/getvalue", q)
@@ -147,7 +175,32 @@ func (c *Client) GetValue(ctx context.Context, cid string) ([]byte, error) {
 	if status < 200 || status >= 300 {
 		return nil, httpError(status, body, header, trailer)
 	}
-	return unwrapValue(body), nil
+
+	v := unwrapValue(body)
+	if isDownloadingPlaceholder(v, cid) {
+		// Flexible-IPFS returns a placeholder string and downloads content to <baseDir>/getdata/<cid>.txt asynchronously.
+		// Prefer the local file when we have access to the base directory.
+		pollUntil := time.Now().Add(2 * time.Second)
+		if dl, ok := ctx.Deadline(); ok && dl.Before(pollUntil) {
+			pollUntil = dl
+		}
+		for {
+			if b, err := c.readGetDataValue(cid); err == nil {
+				return b, nil
+			}
+			if time.Now().After(pollUntil) {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+		return nil, fmt.Errorf("flexipfs getvalue pending: %s", strings.TrimSpace(string(v)))
+	}
+
+	return v, nil
 }
 
 func (c *Client) GetByAttrs(ctx context.Context, attrs, tags []string, showAll bool) ([]string, error) {
@@ -255,7 +308,13 @@ func (c *Client) PeerList(ctx context.Context) (string, error) {
 func (c *Client) postQuery(ctx context.Context, apiPath string, q url.Values) (body []byte, status int, header http.Header, trailer http.Header, err error) {
 	fullURL := c.BaseURL + apiPath
 	if q != nil {
-		fullURL += "?" + q.Encode()
+		encoded := q.Encode()
+		// Flexible-IPFS parses its query string via java.net.URI.getQuery() (percent-decoded but '+' preserved).
+		// Encode spaces as %20 instead of '+' so stored values round-trip correctly.
+		if strings.Contains(encoded, "+") {
+			encoded = strings.ReplaceAll(encoded, "+", "%20")
+		}
+		fullURL += "?" + encoded
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, nil)
@@ -468,4 +527,139 @@ func unwrapValue(body []byte) []byte {
 		}
 	}
 	return b
+}
+
+func isDownloadingPlaceholder(v []byte, cid string) bool {
+	s := strings.TrimSpace(string(v))
+	return strings.HasPrefix(s, "Downloading chunks for CID:") && strings.Contains(s, cid)
+}
+
+func decodeGetDataValue(b []byte) []byte {
+	b = bytes.TrimRight(b, "\r\n")
+	if len(b) < 2 {
+		return b
+	}
+	prefix := b[0]
+	if prefix >= 'A' && prefix <= 'Z' {
+		expected := int(prefix-'A') + 1
+		if len(b)-1 == expected {
+			return b[1:]
+		}
+	}
+	// Flexible-IPFS uses a 3-byte prefix for larger values:
+	//   'Y' + uint16(len(payload)) + payload
+	// where the uint16 is big-endian.
+	if prefix == 'Y' && len(b) >= 3 {
+		expected := int(b[1])<<8 | int(b[2])
+		if len(b)-3 == expected {
+			return b[3:]
+		}
+	}
+	return b
+}
+
+func (c *Client) readGetDataValue(cid string) ([]byte, error) {
+	baseDir := strings.TrimSpace(c.BaseDir)
+	if baseDir == "" {
+		return nil, os.ErrNotExist
+	}
+
+	dataDirs := []string{
+		filepath.Join(baseDir, "getdata"),
+	}
+	if v := readKadrttProperty(baseDir, "ipfs.datapath"); v != "" {
+		if filepath.IsAbs(v) {
+			dataDirs = append(dataDirs, v)
+		} else {
+			dataDirs = append(dataDirs, filepath.Join(baseDir, v))
+		}
+	}
+
+	var firstErr error
+	for _, dir := range uniqStrings(dataDirs) {
+		p := filepath.Join(dir, cid+".txt")
+		b, err := os.ReadFile(p)
+		if err == nil {
+			b = decodeGetDataValue(b)
+			if len(b) != 0 {
+				return b, nil
+			}
+			continue
+		}
+		if firstErr == nil && !errors.Is(err, os.ErrNotExist) {
+			firstErr = err
+		}
+
+		// Fall back to other extensions (e.g., files uploaded via `file=...`), but never the
+		// raw `<cid>` file (that's the serialized MerkleDAG metadata, not the stored value).
+		matches, globErr := filepath.Glob(filepath.Join(dir, cid+".*"))
+		if globErr != nil {
+			if firstErr == nil {
+				firstErr = globErr
+			}
+			continue
+		}
+		sort.Strings(matches)
+		for _, p := range matches {
+			if strings.HasSuffix(p, ".txt") {
+				continue
+			}
+			b, err := os.ReadFile(p)
+			if err != nil {
+				if firstErr == nil && !errors.Is(err, os.ErrNotExist) {
+					firstErr = err
+				}
+				continue
+			}
+			b = decodeGetDataValue(b)
+			if len(b) == 0 {
+				continue
+			}
+			return b, nil
+		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return nil, os.ErrNotExist
+}
+
+func readKadrttProperty(baseDir, key string) string {
+	propsPath := filepath.Join(baseDir, "kadrtt.properties")
+	b, err := os.ReadFile(propsPath)
+	if err != nil {
+		return ""
+	}
+	for _, raw := range strings.Split(string(b), "\n") {
+		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
+			continue
+		}
+		if !strings.HasPrefix(line, key) {
+			continue
+		}
+		i := strings.IndexAny(line, "=:")
+		if i < 0 {
+			continue
+		}
+		return strings.TrimSpace(line[i+1:])
+	}
+	return ""
+}
+
+func uniqStrings(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }
