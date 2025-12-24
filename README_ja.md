@@ -167,6 +167,9 @@ curl.exe -X POST http://127.0.0.1:5001/api/v0/dht/peerlist
   - 初回起動時に `kadrtt.properties` のデフォルト値（例: `/ip4/10.202...`）で `.ipfs/config` が生成され、その後 `ipfs.endpoint override` を変えても `"Bootstrap"` が自動更新されないケースがあります。
   - 対処: `"Bootstrap"` に A の endpoint（`/ip4/<AのLAN IP>/tcp/4001/ipfs/<PeerID>`）を入れる（または `flexible-ipfs-base/.ipfs/config` を削除して再起動）→ `bbs-client`/`bbs-node` を再起動。
 
+- `flex-ipfs.log` に `Database may be already in use: .../.ipfs/datastore/h2.datastore.mv.db` が出る場合、同じ `.ipfs` ディレクトリを複数の Flexible‑IPFS プロセスが同時に使っている状態です。
+  - 対処: 余分な `bbs-node`/`java` を停止して再起動（または `flexible-ipfs-base/.ipfs` を削除して初期化）。
+
 #### 4) ボード作成 → 共有（Add board）
 
 1. PC-B: `Browse boards` → `Create board`

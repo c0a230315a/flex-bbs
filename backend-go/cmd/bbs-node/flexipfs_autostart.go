@@ -71,22 +71,83 @@ func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride, gwEndpoin
 		return nil, err
 	}
 
-	proc, err := startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride, logDir)
-	if err != nil {
-		return nil, err
-	}
-
-	// Best-effort wait for API to come up
-	waitForFlexIPFS(ctx, baseURL, 20*time.Second)
-	// Best-effort explicit connect to a configured gw endpoint (if any).
-	if endpoint := resolveFlexIPFSConnectEndpoint(flexBaseDir, gwEndpointOverride); endpoint != "" {
-		if err := flexIPFSSwarmConnect(ctx, baseURL, endpoint); err != nil {
-			log.Printf("flex-ipfs swarm/connect failed: %v", err)
+	// When bbs-client runs subcommands (e.g. `bbs-node init-board`) it starts a second bbs-node process
+	// while the managed backend bbs-node may already be starting/stopping Flexible-IPFS. Without
+	// coordination, both processes can attempt to start Flexible-IPFS against the same `.ipfs` dir and
+	// crash with:
+	//   "Database may be already in use: .../.ipfs/datastore/h2.datastore.mv.db"
+	// Use a simple cross-process lock file to ensure only one starter at a time.
+	lockPath := filepath.Join(flexBaseDir, ".flex-ipfs-start.lock")
+	lockDeadline := time.Now().Add(90 * time.Second)
+	for {
+		// Another process might have started flex-ipfs while we were resolving paths.
+		if isFlexIPFSUp(ctx, baseURL) {
+			log.Printf("flex-ipfs already running at %s", baseURL)
+			// Best-effort: keep config files in sync even when flex-ipfs was started by another process.
+			if err := maybeOverrideKadrttGWEndpoint(flexBaseDir, gwEndpointOverride); err != nil {
+				return nil, err
+			}
+			if err := ensureKadrttGlobalIP(flexBaseDir, gwEndpointOverride); err != nil {
+				log.Printf("flex-ipfs ensure ipfs.globalip failed: %v", err)
+			}
+			if err := syncFlexIPFSBootstrapConfig(flexBaseDir, gwEndpointOverride); err != nil {
+				log.Printf("flex-ipfs bootstrap config sync failed: %v", err)
+			}
+			// Best-effort: explicit connect to a configured gw endpoint (if any).
+			if endpoint := resolveFlexIPFSConnectEndpoint(flexBaseDir, gwEndpointOverride); endpoint != "" {
+				if err := flexIPFSSwarmConnect(ctx, baseURL, endpoint); err != nil {
+					log.Printf("flex-ipfs swarm/connect failed: %v", err)
+				}
+				waitForFlexIPFSPeers(ctx, baseURL, 5*time.Second)
+			}
+			return nil, nil
 		}
+
+		release, ok, err := tryAcquireFlexIPFSStartLock(lockPath)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			// We are the starter.
+			proc, err := startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride, logDir)
+			if err != nil {
+				release()
+				return nil, err
+			}
+			// Keep the lock held until the HTTP API is up (prevents concurrent start attempts).
+			ready := waitForFlexIPFS(ctx, baseURL, 60*time.Second)
+			if !ready {
+				// If the API never comes up, kill the child process so the `.ipfs` datastore lock
+				// is released and a future retry can succeed.
+				proc.stop()
+				release()
+				return nil, fmt.Errorf("flex-ipfs API not ready after 60s (is another flex-ipfs/java process holding .ipfs/datastore?)")
+			}
+			release()
+			// Best-effort explicit connect to a configured gw endpoint (if any).
+			if endpoint := resolveFlexIPFSConnectEndpoint(flexBaseDir, gwEndpointOverride); endpoint != "" {
+				if err := flexIPFSSwarmConnect(ctx, baseURL, endpoint); err != nil {
+					log.Printf("flex-ipfs swarm/connect failed: %v", err)
+				}
+			}
+			// Best-effort wait for bootstrap to populate peers (prevents early put failures).
+			waitForFlexIPFSPeers(ctx, baseURL, 5*time.Second)
+			return proc, nil
+		}
+
+		// Another process is starting flex-ipfs; wait for it to come up.
+		if st, statErr := os.Stat(lockPath); statErr == nil {
+			// Stale lock cleanup (e.g. a crashed starter).
+			if time.Since(st.ModTime()) > 5*time.Minute {
+				_ = os.Remove(lockPath)
+				continue
+			}
+		}
+		if time.Now().After(lockDeadline) {
+			return nil, fmt.Errorf("timeout waiting for flex-ipfs start lock: %s", lockPath)
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
-	// Best-effort wait for bootstrap to populate peers (prevents early put failures).
-	waitForFlexIPFSPeers(ctx, baseURL, 5*time.Second)
-	return proc, nil
 }
 
 func (p *flexIPFSProc) stop() {
@@ -590,6 +651,19 @@ func syncFlexIPFSBootstrapConfig(flexBaseDir, gwEndpointOverride string) error {
 	return nil
 }
 
+func tryAcquireFlexIPFSStartLock(lockPath string) (release func(), acquired bool, err error) {
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err == nil {
+		_, _ = fmt.Fprintf(f, "pid=%d\nstarted=%s\n", os.Getpid(), time.Now().Format(time.RFC3339Nano))
+		_ = f.Close()
+		return func() { _ = os.Remove(lockPath) }, true, nil
+	}
+	if os.IsExist(err) {
+		return func() {}, false, nil
+	}
+	return func() {}, false, err
+}
+
 func resolveFlexIPFSConnectEndpoint(baseDirOrOverride string, gwEndpointOverride string) string {
 	if v := strings.TrimSpace(gwEndpointOverride); v != "" {
 		return v
@@ -635,24 +709,30 @@ func readKadrttGWEndpoint(flexBaseDir string) (string, error) {
 	return "", nil
 }
 
-func waitForFlexIPFS(ctx context.Context, baseURL string, timeout time.Duration) {
+func waitForFlexIPFS(ctx context.Context, baseURL string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	endpoint := strings.TrimRight(baseURL, "/") + "/dht/peerlist"
 	client := &http.Client{Timeout: 2 * time.Second}
 
 	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
 		resp, err := client.Do(req)
 		if err == nil && resp != nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 500 {
 				log.Printf("flex-ipfs API ready: %s", endpoint)
-				return
+				return true
 			}
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	log.Printf("flex-ipfs API not ready after %s", timeout)
+	return false
 }
 
 func flexIPFSSwarmConnect(ctx context.Context, baseURL, addr string) error {

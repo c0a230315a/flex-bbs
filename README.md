@@ -117,6 +117,9 @@ Flexible‑IPFS needs at least 1 peer connection (see `dht/peerlist`). On a LAN,
   - On first run, `.ipfs/config` can be generated from the bundled default `kadrtt.properties` endpoint (e.g. `/ip4/10.202...`). Changing `ipfs.endpoint override` later may not update `"Bootstrap"` automatically.
   - Fix: update `"Bootstrap"` to your gw endpoint (`/ip4/<A_LAN_IP>/tcp/4001/ipfs/<PeerID>`) or delete `flexible-ipfs-base/.ipfs/config` and restart.
 
+- If `flex-ipfs.log` shows `Database may be already in use: .../.ipfs/datastore/h2.datastore.mv.db`, multiple Flexible‑IPFS processes are running against the same `.ipfs` directory.
+  - Fix: stop other `bbs-node`/`java` processes using that directory and restart (or delete `flexible-ipfs-base/.ipfs` to reset).
+
 ## Windows 2-PC TUI guide (mDNS, FULL/CLIENT, create board)
 
 Flexible‑IPFS needs at least 1 peer connection. If `dht/peerlist` returns `""`, flows like `Create board` will fail.
