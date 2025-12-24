@@ -197,12 +197,15 @@ public sealed class BackendLauncher : IDisposable
     {
         var timeout = TimeSpan.FromSeconds(15);
 
-        // bbs-node may block startup while waiting for flex-ipfs autostart (up to ~20s).
+        // bbs-node may block startup while waiting for flex-ipfs autostart.
+        // As of current backend-go logic this can include:
+        // - cross-process start lock wait (up to ~90s)
+        // - flex-ipfs API readiness wait (up to ~60s)
         var autostartFlex = GetBoolArg(bbsNodeArgs, "--autostart-flexipfs");
         var flexBaseUrl = TryGetArgValue(bbsNodeArgs, "--flexipfs-base-url");
         if (autostartFlex == true && BbsNodeArgsBuilder.IsLocalBaseUrl(flexBaseUrl ?? ""))
         {
-            timeout += TimeSpan.FromSeconds(30);
+            timeout += TimeSpan.FromSeconds(120);
         }
 
         // flex-ipfs gw endpoint resolution can block on mDNS discovery.

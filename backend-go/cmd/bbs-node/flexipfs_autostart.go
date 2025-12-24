@@ -23,6 +23,7 @@ type flexIPFSProc struct {
 	cmd         *exec.Cmd
 	stdinWriter io.Closer
 	logFile     *os.File
+	done        chan struct{}
 }
 
 func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride, gwEndpointOverride, logDir string) (*flexIPFSProc, error) {
@@ -109,19 +110,37 @@ func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride, gwEndpoin
 		}
 		if ok {
 			// We are the starter.
-			proc, err := startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride, logDir)
-			if err != nil {
-				release()
-				return nil, err
-			}
 			// Keep the lock held until the HTTP API is up (prevents concurrent start attempts).
-			ready := waitForFlexIPFS(ctx, baseURL, 60*time.Second)
-			if !ready {
+			// Flexible-IPFS is known to sometimes exit early; retry a few times in that case.
+			var proc *flexIPFSProc
+			for attempt := 1; attempt <= 3; attempt++ {
+				p, err := startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride, logDir)
+				if err != nil {
+					release()
+					return nil, err
+				}
+				proc = p
+
+				ready, exited := waitForFlexIPFS(ctx, baseURL, 60*time.Second, proc)
+				if ready {
+					break
+				}
+
 				// If the API never comes up, kill the child process so the `.ipfs` datastore lock
 				// is released and a future retry can succeed.
 				proc.stop()
-				release()
-				return nil, fmt.Errorf("flex-ipfs API not ready after 60s (is another flex-ipfs/java process holding .ipfs/datastore?)")
+				proc = nil
+
+				if ctx.Err() != nil {
+					release()
+					return nil, ctx.Err()
+				}
+				if !exited || attempt == 3 {
+					release()
+					return nil, fmt.Errorf("flex-ipfs API not ready after 60s (is another flex-ipfs/java process holding .ipfs/datastore?)")
+				}
+				log.Printf("flex-ipfs exited before API was ready; retrying start (%d/3)", attempt+1)
+				time.Sleep(1 * time.Second)
 			}
 			release()
 			// Best-effort explicit connect to a configured gw endpoint (if any).
@@ -317,7 +336,9 @@ func startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride, logDir string) (*fl
 
 	log.Printf("flex-ipfs started pid=%d baseDir=%s java=%s", cmd.Process.Pid, flexBaseDir, javaBin)
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		if err := cmd.Wait(); err != nil {
 			log.Printf("flex-ipfs exited: %v", err)
 		} else {
@@ -325,7 +346,7 @@ func startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride, logDir string) (*fl
 		}
 	}()
 
-	return &flexIPFSProc{cmd: cmd, stdinWriter: stdinW, logFile: logFile}, nil
+	return &flexIPFSProc{cmd: cmd, stdinWriter: stdinW, logFile: logFile, done: done}, nil
 }
 
 func isCharDevice(f *os.File) bool {
@@ -388,6 +409,22 @@ func detectLocalIP4() string {
 	return ""
 }
 
+func isSelfGWEndpoint(endpoint string) bool {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return false
+	}
+	ip := extractIP4FromMultiaddr(endpoint)
+	if ip == "" {
+		return false
+	}
+	if ip == "127.0.0.1" || ip == "0.0.0.0" {
+		return true
+	}
+	local := detectLocalIP4()
+	return local != "" && ip == local
+}
+
 func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
 	endpoint = strings.TrimSpace(endpoint)
 	if endpoint == "" {
@@ -395,6 +432,10 @@ func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
 	}
 	if strings.ContainsAny(endpoint, "\r\n") {
 		return fmt.Errorf("FLEXIPFS_GW_ENDPOINT must be a single line")
+	}
+	if isSelfGWEndpoint(endpoint) {
+		log.Printf("flex-ipfs: skip ipfs.endpoint override (self endpoint): %s", endpoint)
+		return nil
 	}
 
 	propsPath := filepath.Join(flexBaseDir, "kadrtt.properties")
@@ -579,6 +620,10 @@ func ensureKadrttGlobalIP(flexBaseDir, gwEndpointOverride string) error {
 func syncFlexIPFSBootstrapConfig(flexBaseDir, gwEndpointOverride string) error {
 	desired := strings.TrimSpace(resolveFlexIPFSConnectEndpoint(flexBaseDir, gwEndpointOverride))
 	if desired == "" {
+		// Avoid bootstrapping to ourselves when a full node config uses its own endpoint for mDNS advertising.
+		if self := strings.TrimSpace(gwEndpointOverride); self != "" && isSelfGWEndpoint(self) {
+			return removeFlexIPFSBootstrapEntry(flexBaseDir, self)
+		}
 		return nil
 	}
 
@@ -651,6 +696,76 @@ func syncFlexIPFSBootstrapConfig(flexBaseDir, gwEndpointOverride string) error {
 	return nil
 }
 
+func removeFlexIPFSBootstrapEntry(flexBaseDir, endpoint string) error {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return nil
+	}
+
+	configPath := filepath.Join(flexBaseDir, ".ipfs", "config")
+	b, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return fmt.Errorf("parse %s: %w", configPath, err)
+	}
+
+	raw, ok := cfg["Bootstrap"]
+	if !ok {
+		return nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+
+	var updated []string
+	removed := false
+	for _, v := range arr {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if s == endpoint {
+			removed = true
+			continue
+		}
+		updated = append(updated, s)
+	}
+	if !removed {
+		return nil
+	}
+
+	cfg["Bootstrap"] = updated
+	out, err := json.MarshalIndent(cfg, "", "\t")
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", configPath, err)
+	}
+	out = append(out, '\n')
+
+	st, statErr := os.Stat(configPath)
+	mode := os.FileMode(0o644)
+	if statErr == nil {
+		mode = st.Mode().Perm()
+	}
+	if err := os.WriteFile(configPath, out, mode); err != nil {
+		return err
+	}
+
+	log.Printf("flex-ipfs: removed bootstrap entry (self): %s", endpoint)
+	return nil
+}
+
 func tryAcquireFlexIPFSStartLock(lockPath string) (release func(), acquired bool, err error) {
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err == nil {
@@ -666,6 +781,9 @@ func tryAcquireFlexIPFSStartLock(lockPath string) (release func(), acquired bool
 
 func resolveFlexIPFSConnectEndpoint(baseDirOrOverride string, gwEndpointOverride string) string {
 	if v := strings.TrimSpace(gwEndpointOverride); v != "" {
+		if isSelfGWEndpoint(v) {
+			return ""
+		}
 		return v
 	}
 
@@ -681,6 +799,9 @@ func resolveFlexIPFSConnectEndpoint(baseDirOrOverride string, gwEndpointOverride
 		return ""
 	}
 	if v, err := readKadrttGWEndpoint(baseDir); err == nil {
+		if isSelfGWEndpoint(v) {
+			return ""
+		}
 		return v
 	}
 	return ""
@@ -709,7 +830,7 @@ func readKadrttGWEndpoint(flexBaseDir string) (string, error) {
 	return "", nil
 }
 
-func waitForFlexIPFS(ctx context.Context, baseURL string, timeout time.Duration) bool {
+func waitForFlexIPFS(ctx context.Context, baseURL string, timeout time.Duration, proc *flexIPFSProc) (ready bool, exited bool) {
 	deadline := time.Now().Add(timeout)
 	endpoint := strings.TrimRight(baseURL, "/") + "/dht/peerlist"
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -717,8 +838,15 @@ func waitForFlexIPFS(ctx context.Context, baseURL string, timeout time.Duration)
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
-			return false
+			return false, false
 		default:
+		}
+		if proc != nil && proc.done != nil {
+			select {
+			case <-proc.done:
+				return false, true
+			default:
+			}
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
 		resp, err := client.Do(req)
@@ -726,13 +854,13 @@ func waitForFlexIPFS(ctx context.Context, baseURL string, timeout time.Duration)
 			_ = resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 500 {
 				log.Printf("flex-ipfs API ready: %s", endpoint)
-				return true
+				return true, false
 			}
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	log.Printf("flex-ipfs API not ready after %s", timeout)
-	return false
+	return false, false
 }
 
 func flexIPFSSwarmConnect(ctx context.Context, baseURL, addr string) error {

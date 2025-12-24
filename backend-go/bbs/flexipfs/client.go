@@ -75,13 +75,40 @@ func (c *Client) PutValueWithAttr(ctx context.Context, value string, attrs, tags
 	}
 
 	// Flexible-IPFS currently crashes on put when its peer list is empty, returning HTTP 400 with no body.
-	// Avoid triggering that by failing fast when peerlist is empty.
-	peers, perr := c.PeerList(ctx)
-	if perr != nil {
-		return "", perr
+	// Avoid triggering that by waiting briefly for peers and failing if peerlist remains empty.
+	peerWaitUntil := time.Now().Add(30 * time.Second)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(peerWaitUntil) {
+		peerWaitUntil = dl
 	}
-	if strings.TrimSpace(peers) == "" {
-		return "", fmt.Errorf("flexipfs has no peers (peerlist is empty). Configure a gw endpoint via FLEXIPFS_GW_ENDPOINT / --flexipfs-gw-endpoint or enable --flexipfs-mdns")
+
+	var lastPeerErr error
+	for attempt := 0; ; attempt++ {
+		peers, perr := c.PeerList(ctx)
+		if perr != nil {
+			lastPeerErr = perr
+		} else if strings.TrimSpace(peers) != "" {
+			break
+		}
+
+		if time.Now().After(peerWaitUntil) {
+			if lastPeerErr != nil {
+				return "", lastPeerErr
+			}
+			return "", fmt.Errorf("flexipfs has no peers (peerlist is empty). Configure a gw endpoint via FLEXIPFS_GW_ENDPOINT / --flexipfs-gw-endpoint or enable --flexipfs-mdns")
+		}
+
+		sleep := time.Duration(200*(attempt+1)) * time.Millisecond
+		if sleep > time.Second {
+			sleep = time.Second
+		}
+		select {
+		case <-ctx.Done():
+			if lastPeerErr != nil {
+				return "", fmt.Errorf("flexipfs peerlist aborted: %w", lastPeerErr)
+			}
+			return "", ctx.Err()
+		case <-time.After(sleep):
+		}
 	}
 
 	q := url.Values{}

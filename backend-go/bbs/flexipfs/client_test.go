@@ -3,14 +3,16 @@ package flexipfs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
-	"net/url"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPutValueWithAttr_URLencodesValue(t *testing.T) {
@@ -154,9 +156,14 @@ func TestPutValueWithAttr_PeerListEmpty_FailsFast(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	c := New(srv.URL + "/api/v0")
-	_, err := c.PutValueWithAttr(context.Background(), "v", []string{"post_1"}, []string{"board_bbs.general"})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	t.Cleanup(cancel)
+	_, err := c.PutValueWithAttr(ctx, "v", []string{"post_1"}, []string{"board_bbs.general"})
 	if err == nil {
 		t.Fatalf("expected error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected deadline exceeded, got: %v", err)
 	}
 	if putCalled {
 		t.Fatalf("putvaluewithattr should not be called when peerlist is empty")
