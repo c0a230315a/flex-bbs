@@ -53,6 +53,7 @@ public sealed record ClientConfig
     public string BackendBaseUrl { get; init; } = "http://127.0.0.1:8080";
     public string BackendRole { get; init; } = "indexer";
     public string UiLanguage { get; init; } = "auto";
+    public string UiTimeZone { get; init; } = "jst";
     public string DataDir { get; init; } = ConfigPaths.DefaultAppDir();
     public bool StartBackend { get; init; } = true;
     public string? BbsNodePath { get; init; }
@@ -69,6 +70,7 @@ public sealed record ClientConfig
         var backendBaseUrl = string.IsNullOrWhiteSpace(BackendBaseUrl) ? "http://127.0.0.1:8080" : BackendBaseUrl.Trim();
         var backendRole = NormalizeRole(BackendRole);
         var uiLanguage = NormalizeUiLanguage(UiLanguage);
+        var uiTimeZone = NormalizeUiTimeZone(UiTimeZone);
         var dataDir = string.IsNullOrWhiteSpace(DataDir) ? ConfigPaths.DefaultAppDir() : DataDir.Trim();
         var bbsNodePath = string.IsNullOrWhiteSpace(BbsNodePath) ? null : BbsNodePath.Trim();
 
@@ -82,6 +84,7 @@ public sealed record ClientConfig
             BackendBaseUrl = backendBaseUrl,
             BackendRole = backendRole,
             UiLanguage = uiLanguage,
+            UiTimeZone = uiTimeZone,
             DataDir = dataDir,
             BbsNodePath = bbsNodePath,
             FlexIpfsBaseUrl = flexIpfsBaseUrl,
@@ -114,6 +117,19 @@ public sealed record ClientConfig
             "ja" => language,
             "jp" => "ja",
             _ => "auto",
+        };
+    }
+
+    private static string NormalizeUiTimeZone(string timeZone)
+    {
+        timeZone = string.IsNullOrWhiteSpace(timeZone) ? "jst" : timeZone.Trim().ToLowerInvariant();
+        return timeZone switch
+        {
+            "utc" => "utc",
+            "jst" => "jst",
+            "tokyo" => "jst",
+            "asia/tokyo" => "jst",
+            _ => "jst",
         };
     }
 }

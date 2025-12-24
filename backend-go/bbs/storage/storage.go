@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"unicode/utf16"
 
 	"flex-bbs/backend-go/bbs/flexipfs"
 	"flex-bbs/backend-go/bbs/types"
@@ -92,6 +94,7 @@ func (s *Storage) saveJSON(ctx context.Context, attrs []string, tags []string, v
 	if err != nil {
 		return "", err
 	}
+	b = escapeJSONNonASCII(b)
 	return s.Flex.PutValueWithAttr(ctx, string(b), attrs, tags)
 }
 
@@ -104,4 +107,44 @@ func (s *Storage) loadJSON(ctx context.Context, cid string, out any) error {
 		return fmt.Errorf("unmarshal cid=%s: %w", cid, err)
 	}
 	return nil
+}
+
+func escapeJSONNonASCII(b []byte) []byte {
+	for _, c := range b {
+		if c >= 0x80 {
+			return escapeJSONNonASCIIImpl(b)
+		}
+	}
+	return b
+}
+
+func escapeJSONNonASCIIImpl(b []byte) []byte {
+	var sb strings.Builder
+	sb.Grow(len(b))
+
+	for _, r := range string(b) {
+		if r <= 0x7F {
+			sb.WriteByte(byte(r))
+			continue
+		}
+		if r <= 0xFFFF {
+			sb.WriteString(`\u`)
+			appendHex4(&sb, uint16(r))
+			continue
+		}
+		hi, lo := utf16.EncodeRune(r)
+		sb.WriteString(`\u`)
+		appendHex4(&sb, uint16(hi))
+		sb.WriteString(`\u`)
+		appendHex4(&sb, uint16(lo))
+	}
+	return []byte(sb.String())
+}
+
+func appendHex4(sb *strings.Builder, v uint16) {
+	const hex = "0123456789ABCDEF"
+	sb.WriteByte(hex[(v>>12)&0xF])
+	sb.WriteByte(hex[(v>>8)&0xF])
+	sb.WriteByte(hex[(v>>4)&0xF])
+	sb.WriteByte(hex[v&0xF])
 }

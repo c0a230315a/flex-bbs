@@ -120,6 +120,7 @@ public sealed class UiLocalizer
         ["No posts to select."] = "選択できる投稿がありません。",
         ["No posts to edit."] = "編集できる投稿がありません。",
         ["No posts to tombstone."] = "削除（墓石）できる投稿がありません。",
+        ["No keys found."] = "鍵がありません。",
         ["No keys to delete."] = "削除できる鍵がありません。",
         ["No blocked authors to remove."] = "解除できるブロックがありません。",
 
@@ -196,10 +197,13 @@ public sealed class UiLocalizer
 
         ["Language"] = "言語",
         ["UI language"] = "UI 言語",
+        ["Time zone"] = "タイムゾーン",
 
         ["Name"] = "名前",
+        ["Key name"] = "鍵の名前",
         ["Public key"] = "公開鍵",
         ["Generate"] = "生成",
+        ["Generate a key now?"] = "鍵を生成しますか？",
         ["Delete"] = "削除",
         ["Delete '{0}'?"] = "「{0}」を削除しますか？",
         ["Remove '{0}'?"] = "「{0}」を削除しますか？",
@@ -214,6 +218,10 @@ public sealed class UiLocalizer
 
         ["Board"] = "板",
         ["Post"] = "投稿",
+        ["CreatedAt"] = "作成日時",
+        ["Author"] = "投稿者",
+        ["CID"] = "CID",
+        ["Parent"] = "親",
 
         ["{0} post(s) hidden (blocked authors)."] = "{0} 件の投稿を非表示（ブロック済みの投稿者）",
         ["edited"] = "編集",

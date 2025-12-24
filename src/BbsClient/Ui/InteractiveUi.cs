@@ -2,6 +2,7 @@ using BbsClient.Api;
 using BbsClient.Storage;
 using BbsClient.Util;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using Spectre.Console;
 
@@ -11,11 +12,14 @@ public static class InteractiveUi
 {
     private const int DefaultPageSize = 50;
     private static UiLocalizer _loc = UiLocalizer.Create("auto");
+    private static TimeZoneInfo _uiTimeZone = TimeZoneInfo.Utc;
+    private static string _uiTimeZoneLabel = "UTC";
 
     private static string L(string text) => _loc.L(text);
     private static string ML(string text) => Markup.Escape(L(text));
     private static string F(string format, params object[] args) => _loc.F(format, args);
     private static void SetLanguage(string? languageSetting) => _loc = UiLocalizer.Create(languageSetting);
+    private static void SetTimeZone(string? timeZoneSetting) => (_uiTimeZone, _uiTimeZoneLabel) = ResolveTimeZone(timeZoneSetting);
 
     public static async Task<int> RunAsync(
         ClientConfigStore configStore,
@@ -26,6 +30,7 @@ public static class InteractiveUi
     {
         var cfg = initialConfig.Normalize();
         SetLanguage(cfg.UiLanguage);
+        SetTimeZone(cfg.UiTimeZone);
 
         if (Console.IsInputRedirected || Console.IsOutputRedirected)
         {
@@ -102,6 +107,7 @@ public static class InteractiveUi
                         {
                             cfg = updated.Normalize();
                             SetLanguage(cfg.UiLanguage);
+                            SetTimeZone(cfg.UiTimeZone);
                             api = new BbsApiClient(http, cfg.BackendBaseUrl);
                             keys = new KeyStore(Path.Combine(cfg.DataDir, "keys.json"));
                             blocked = new BlockedStore(Path.Combine(cfg.DataDir, "blockedPubKeys.json"));
@@ -409,11 +415,11 @@ public static class InteractiveUi
             for (var i = 0; i < threads.Count; i++)
             {
                 var t = threads[i];
-                table.AddRow(
+            table.AddRow(
                     (offset + i + 1).ToString(),
                     Markup.Escape(t.ThreadId),
                     Markup.Escape(t.Thread.Title),
-                    Markup.Escape(t.Thread.CreatedAt)
+                    Markup.Escape(FormatTimestamp(t.Thread.CreatedAt))
                 );
             }
             AnsiConsole.Write(table);
@@ -522,17 +528,17 @@ public static class InteractiveUi
             {
                 var p = visiblePosts[i];
 
-                var meta = $"[bold]#{i + 1}[/] {Markup.Escape(p.Post.DisplayName)} [grey]{Markup.Escape(p.Post.CreatedAt)}[/]";
+                var meta = $"[bold]#{i + 1}[/] {Markup.Escape(p.Post.DisplayName)} [grey]{Markup.Escape(FormatTimestamp(p.Post.CreatedAt))}[/]";
                 if (!string.IsNullOrWhiteSpace(p.Post.EditedAt))
                 {
-                    meta += $" [grey]({ML("edited")} {Markup.Escape(p.Post.EditedAt)})[/]";
+                    meta += $" [grey]({ML("edited")} {Markup.Escape(FormatTimestamp(p.Post.EditedAt))})[/]";
                 }
 
-                var cidLine = KeyValueMarkupAuto("CID", p.Cid);
-                var authorLine = KeyValueMarkupAuto("Author", p.Post.AuthorPubKey);
+                var cidLine = KeyValueMarkupAuto(L("CID"), p.Cid);
+                var authorLine = KeyValueMarkupAuto(L("Author"), p.Post.AuthorPubKey);
                 var parentLine = string.IsNullOrWhiteSpace(p.Post.ParentPostCid)
                     ? null
-                    : KeyValueMarkupAuto("Parent", p.Post.ParentPostCid);
+                    : KeyValueMarkupAuto(L("Parent"), p.Post.ParentPostCid);
 
                 var body = p.Tombstoned
                     ? $"[red][{ML("tombstoned")}][/]\n{Markup.Escape(p.TombstoneReason ?? "")}".TrimEnd()
@@ -833,13 +839,13 @@ public static class InteractiveUi
             for (var i = 0; i < results.Count; i++)
             {
                 var r = results[i];
-                table.AddRow(
+            table.AddRow(
                     (offset + i + 1).ToString(),
                     Markup.Escape(r.BoardId),
                     Markup.Escape(Short(r.ThreadId, 16)),
                     Markup.Escape(Short(r.PostCid, 16)),
                     Markup.Escape(r.DisplayName),
-                    Markup.Escape(r.CreatedAt)
+                    Markup.Escape(FormatTimestamp(r.CreatedAt))
                 );
             }
             AnsiConsole.Write(table);
@@ -1150,6 +1156,7 @@ public static class InteractiveUi
             AnsiConsole.MarkupLine($"[grey]{ML("Backend")}:[/] {Markup.Escape(cfg.BackendBaseUrl)} [{(healthy ? "green" : "red")}]{ML(healthy ? "up" : "down")}[/]");
             AnsiConsole.MarkupLine($"[grey]{ML("Backend role (managed)")}:[/] {Markup.Escape(cfg.BackendRole)}");
             AnsiConsole.MarkupLine($"[grey]{ML("UI language")}:[/] {Markup.Escape(L(cfg.UiLanguage))}");
+            AnsiConsole.MarkupLine($"[grey]{ML("Time zone")}:[/] {Markup.Escape(cfg.UiTimeZone.ToUpperInvariant())}");
             AnsiConsole.MarkupLine($"[grey]{ML("Auto-start backend")}:[/] {cfg.StartBackend}");
             AnsiConsole.MarkupLine($"[grey]{ML("bbs-node path")}:[/] {Markup.Escape(cfg.BbsNodePath ?? L("<auto>"))}");
             AnsiConsole.MarkupLine($"[grey]{ML("Data dir")}:[/] {Markup.Escape(cfg.DataDir)}");
@@ -1164,7 +1171,7 @@ public static class InteractiveUi
             var choice = AnsiConsole.Prompt(
                 new SelectionPrompt<string>()
                     .Title(L("Settings menu"))
-                    .AddChoices("Client / Backend", "Flexible-IPFS", "Language", "kadrtt.properties", "Backend control", "Back")
+                    .AddChoices("Client / Backend", "Flexible-IPFS", "Language", "Time zone", "kadrtt.properties", "Backend control", "Back")
                     .UseConverter(L)
             );
 
@@ -1197,6 +1204,23 @@ public static class InteractiveUi
                     var updated = cfg with { UiLanguage = selected };
                     cfg = await ApplyConfigAsync(configStore, launcher, cfg, updated, ct);
                     SetLanguage(cfg.UiLanguage);
+                    break;
+                }
+                case "Time zone":
+                {
+                    var zones = new[] { cfg.UiTimeZone, "utc", "jst" }
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    var selected = AnsiConsole.Prompt(
+                        new SelectionPrompt<string>()
+                            .Title(L("Time zone"))
+                            .AddChoices(zones)
+                            .UseConverter(z => z.ToUpperInvariant())
+                    );
+                    var updated = cfg with { UiTimeZone = selected };
+                    cfg = await ApplyConfigAsync(configStore, launcher, cfg, updated, ct);
+                    SetTimeZone(cfg.UiTimeZone);
                     break;
                 }
                 case "kadrtt.properties":
@@ -2118,4 +2142,45 @@ public static class InteractiveUi
     }
 
     private sealed record Choice<T>(string Label, T? Value) where T : class;
+
+    private static string FormatTimestamp(string? rfc3339)
+    {
+        if (string.IsNullOrWhiteSpace(rfc3339))
+        {
+            return rfc3339 ?? "";
+        }
+
+        if (!DateTimeOffset.TryParse(rfc3339, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var dto))
+        {
+            return rfc3339;
+        }
+
+        var converted = TimeZoneInfo.ConvertTime(dto, _uiTimeZone);
+        return converted.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + " " + _uiTimeZoneLabel;
+    }
+
+    private static (TimeZoneInfo TimeZone, string Label) ResolveTimeZone(string? timeZoneSetting)
+    {
+        var tz = string.IsNullOrWhiteSpace(timeZoneSetting) ? "utc" : timeZoneSetting.Trim().ToLowerInvariant();
+        return tz switch
+        {
+            "jst" => (ResolveJstTimeZone(), "JST"),
+            _ => (TimeZoneInfo.Utc, "UTC"),
+        };
+    }
+
+    private static TimeZoneInfo ResolveJstTimeZone()
+    {
+        foreach (var id in new[] { "Asia/Tokyo", "Tokyo Standard Time" })
+        {
+            try
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById(id);
+            }
+            catch
+            {
+            }
+        }
+        return TimeZoneInfo.CreateCustomTimeZone("JST", TimeSpan.FromHours(9), "JST", "JST");
+    }
 }
