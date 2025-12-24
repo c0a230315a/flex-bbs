@@ -175,6 +175,13 @@ func (c *Client) PutValueWithAttr(ctx context.Context, value string, attrs, tags
 				return "", fmt.Errorf("flexipfs put failed: no peers connected (peerlist is empty). Configure a gw endpoint via FLEXIPFS_GW_ENDPOINT / --flexipfs-gw-endpoint or enable --flexipfs-mdns: %w", httpErr)
 			}
 
+			// Connection failures are unlikely to resolve by retrying the PUT loop; fail fast so callers can
+			// surface a clearer configuration/network error (e.g. bad gw endpoint or blocked TCP/4001).
+			lower := strings.ToLower(httpErr.Error())
+			if strings.Contains(lower, "connection refused") || strings.Contains(lower, "connectexception") || strings.Contains(lower, "timed out") {
+				return "", fmt.Errorf("flexipfs put failed: peer connection error (check FLEXIPFS_GW_ENDPOINT / --flexipfs-gw-endpoint and firewall): %w", httpErr)
+			}
+
 			lastErr = fmt.Errorf("flexipfs put failed: http 400 with empty body (check flex-ipfs.log): %w", httpErr)
 			if time.Now().After(retryUntil) {
 				return "", fmt.Errorf("flexipfs put failed after %d attempts: %w", attempt+1, lastErr)

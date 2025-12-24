@@ -110,6 +110,33 @@ public sealed class BbsApiClient
         return (await resp.Content.ReadFromJsonAsync<List<SearchPostResult>>(JsonOptions, ct)) ?? [];
     }
 
+    public async Task<List<BoardItem>> SearchBoardsAsync(string q, int limit, int offset, CancellationToken ct)
+    {
+        var query = new List<string>();
+        if (!string.IsNullOrWhiteSpace(q)) query.Add($"q={Uri.EscapeDataString(q)}");
+        query.Add($"limit={limit}");
+        query.Add($"offset={offset}");
+        var url = $"{_baseUrl}/api/v1/search/boards?{string.Join("&", query)}";
+        var sw = Stopwatch.StartNew();
+        using var resp = await SendAsync(HttpMethod.Get, url, ct);
+        await EnsureSuccess("GET", url, resp, ct, sw);
+        return (await resp.Content.ReadFromJsonAsync<List<BoardItem>>(JsonOptions, ct)) ?? [];
+    }
+
+    public async Task<List<ThreadItem>> SearchThreadsAsync(string q, string? boardId, int limit, int offset, CancellationToken ct)
+    {
+        var query = new List<string>();
+        if (!string.IsNullOrWhiteSpace(q)) query.Add($"q={Uri.EscapeDataString(q)}");
+        if (!string.IsNullOrWhiteSpace(boardId)) query.Add($"boardId={Uri.EscapeDataString(boardId)}");
+        query.Add($"limit={limit}");
+        query.Add($"offset={offset}");
+        var url = $"{_baseUrl}/api/v1/search/threads?{string.Join("&", query)}";
+        var sw = Stopwatch.StartNew();
+        using var resp = await SendAsync(HttpMethod.Get, url, ct);
+        await EnsureSuccess("GET", url, resp, ct, sw);
+        return (await resp.Content.ReadFromJsonAsync<List<ThreadItem>>(JsonOptions, ct)) ?? [];
+    }
+
     private async Task<HttpResponseMessage> SendAsync(HttpMethod method, string url, CancellationToken ct)
     {
         try

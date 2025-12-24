@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"flex-bbs/backend-go/bbs/config"
 	"flex-bbs/backend-go/bbs/flexipfs"
 	"flex-bbs/backend-go/bbs/indexer"
+	bbslog "flex-bbs/backend-go/bbs/log"
 	"flex-bbs/backend-go/bbs/signature"
 	"flex-bbs/backend-go/bbs/storage"
 	"flex-bbs/backend-go/bbs/types"
@@ -314,12 +316,19 @@ func runAddBoard(args []string) int {
 	fs := flag.NewFlagSet("add-board", flag.ExitOnError)
 	boardID := fs.String("board-id", "", "board ID (e.g. bbs.general)")
 	boardMetaCID := fs.String("board-meta-cid", "", "BoardMeta CID")
+	flexBase := fs.String("flexipfs-base-url", "http://127.0.0.1:5001/api/v0", "Flexible-IPFS HTTP API base URL")
+	flexBaseDir := fs.String("flexipfs-base-dir", "", "path to flexible-ipfs-base (auto-detected if empty)")
+	flexGWEndpoint := fs.String("flexipfs-gw-endpoint", "", "override ipfs.endpoint in flexible-ipfs-base/kadrtt.properties when autostarting (also via env FLEXIPFS_GW_ENDPOINT)")
+	flexMdns := fs.Bool("flexipfs-mdns", false, "use mDNS on LAN to discover flex-ipfs gw endpoint")
+	flexMdnsSvc := fs.String("flexipfs-mdns-service", defaultFlexIPFSMdnsService, "mDNS service type for flex-ipfs gw endpoint (e.g. _flexipfs-gw._tcp)")
+	flexMdnsTO := fs.Duration("flexipfs-mdns-timeout", defaultFlexIPFSMdnsTimeout, "mDNS discovery timeout")
+	autostartFlexIPFS := fs.Bool("autostart-flexipfs", true, "auto start local Flexible-IPFS if not running")
 	dd := fs.String("data-dir", "", "data directory (defaults to OS config dir)")
 	bf := fs.String("boards-file", "", "boards.json path (defaults to <data-dir>/boards.json)")
 	_ = fs.Parse(args)
 
-	if *boardID == "" || *boardMetaCID == "" {
-		log.Printf("missing required fields: --board-id --board-meta-cid")
+	if *boardMetaCID == "" {
+		log.Printf("missing required fields: --board-meta-cid")
 		return 2
 	}
 	data := *dd
@@ -330,12 +339,53 @@ func runAddBoard(args []string) int {
 	if boardsPath == "" {
 		boardsPath = filepath.Join(data, "boards.json")
 	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var flexProc *flexIPFSProc
+
+	if strings.TrimSpace(*boardID) == "" {
+		if *autostartFlexIPFS {
+			flexGW, _ := resolveFlexIPFSGWEndpointWithMdns(ctx, *flexGWEndpoint, *flexMdns, *flexMdnsSvc, *flexMdnsTO)
+			p, err := maybeStartFlexIPFS(ctx, *flexBase, *flexBaseDir, flexGW, filepath.Join(data, "logs"))
+			if err != nil {
+				log.Printf("flex-ipfs autostart failed: %v", err)
+			} else {
+				flexProc = p
+				defer flexProc.stop()
+			}
+		}
+
+		flex := flexipfs.New(*flexBase)
+		if isLocalBaseURL(*flexBase) {
+			if baseDir, _, err := resolveFlexDirs(*flexBaseDir); err == nil && baseDir != "" {
+				flex.BaseDir = baseDir
+			}
+		}
+		st := storage.New(flex)
+
+		bm, err := st.LoadBoardMeta(ctx, *boardMetaCID)
+		if err != nil {
+			log.Printf("load boardMeta: %v", err)
+			return 1
+		}
+		if !bbslog.VerifyBoardMeta(bm) {
+			log.Printf("invalid boardMeta signature cid=%s boardId=%s", *boardMetaCID, bm.BoardID)
+			return 1
+		}
+		if strings.TrimSpace(bm.BoardID) == "" {
+			log.Printf("boardId is empty in boardMeta cid=%s", *boardMetaCID)
+			return 1
+		}
+		*boardID = bm.BoardID
+	}
+
 	boards := config.NewBoardsStore(boardsPath)
 	_ = boards.Load()
 	if err := boards.Upsert(*boardID, *boardMetaCID); err != nil {
 		log.Printf("update boards.json: %v", err)
 		return 1
 	}
-	fmt.Printf("ok\n")
+	fmt.Printf("ok boardId=%s\n", *boardID)
 	return 0
 }

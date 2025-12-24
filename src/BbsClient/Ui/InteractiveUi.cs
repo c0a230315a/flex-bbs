@@ -80,7 +80,7 @@ public static class InteractiveUi
             var choice = AnsiConsole.Prompt(
                 new SelectionPrompt<string>()
                     .Title(L("Main menu"))
-                    .AddChoices("Browse boards", "Search posts", "Keys", "Blocked", "Settings", "Quit")
+                    .AddChoices("Browse boards", "Search", "Keys", "Blocked", "Settings", "Quit")
                     .UseConverter(L)
             );
 
@@ -91,8 +91,8 @@ public static class InteractiveUi
                     case "Browse boards":
                         await BrowseBoardsAsync(api, cfg, keys, blocked, ct);
                         break;
-                    case "Search posts":
-                        await SearchPostsAsync(api, keys, blocked, ct);
+                    case "Search":
+                        await SearchAsync(api, keys, blocked, ct);
                         break;
                     case "Keys":
                         await KeysMenuAsync(keys, ct);
@@ -197,14 +197,16 @@ public static class InteractiveUi
                         break;
                     }
 
-                    var selected = AnsiConsole.Prompt(
-                        new SelectionPrompt<BoardItem>()
-                            .Title(L("Select board"))
-                            .PageSize(12)
-                            .MoreChoicesText($"[grey]{ML("(move up and down to reveal more boards)")}[/]")
-                            .AddChoices(boards)
-                            .UseConverter(b => $"{Markup.Escape(b.Board.BoardId)}  {Markup.Escape(b.Board.Title)}  [grey]{Markup.Escape(Short(b.BoardMetaCid, 24))}[/]")
+                    var selected = PromptWithBack(
+                        L("Select board"),
+                        boards,
+                        b => $"{Markup.Escape(b.Board.BoardId)}  {Markup.Escape(b.Board.Title)}  [grey]{Markup.Escape(Short(b.BoardMetaCid, 24))}[/]",
+                        moreChoicesText: $"[grey]{ML("(move up and down to reveal more boards)")}[/]"
                     );
+                    if (selected == null)
+                    {
+                        break;
+                    }
 
                     await BrowseThreadsAsync(api, keys, blocked, selected.Board.BoardId, selected.Board.Title, ct);
                     break;
@@ -335,15 +337,13 @@ public static class InteractiveUi
             return;
         }
 
-        var boardId = AnsiConsole.Ask<string>(L("Board ID"));
         var boardMetaCid = AnsiConsole.Ask<string>(L("BoardMeta CID"));
-        if (string.IsNullOrWhiteSpace(boardId) || string.IsNullOrWhiteSpace(boardMetaCid))
+        if (string.IsNullOrWhiteSpace(boardMetaCid))
         {
-            AnsiConsole.MarkupLine($"[yellow]{ML("Board ID / CID is empty. Canceled.")}[/]");
+            AnsiConsole.MarkupLine($"[yellow]{ML("BoardMeta CID is empty. Canceled.")}[/]");
             Pause();
             return;
         }
-        boardId = boardId.Trim();
         boardMetaCid = boardMetaCid.Trim();
 
         if (!AnsiConsole.Confirm(L("Register this board locally (boards.json)?"), true))
@@ -354,17 +354,31 @@ public static class InteractiveUi
         var args = new List<string>
         {
             "add-board",
-            "--board-id", boardId,
             "--board-meta-cid", boardMetaCid,
+            "--flexipfs-base-url", cfg.FlexIpfsBaseUrl,
+            $"--autostart-flexipfs={cfg.AutostartFlexIpfs.ToString().ToLowerInvariant()}",
+            $"--flexipfs-mdns={cfg.FlexIpfsMdns.ToString().ToLowerInvariant()}",
+            "--flexipfs-mdns-timeout", $"{cfg.FlexIpfsMdnsTimeoutSeconds}s",
             "--data-dir", cfg.DataDir,
         };
+        if (!string.IsNullOrWhiteSpace(cfg.FlexIpfsBaseDir))
+        {
+            args.Add("--flexipfs-base-dir");
+            args.Add(cfg.FlexIpfsBaseDir);
+        }
+        if (!string.IsNullOrWhiteSpace(cfg.FlexIpfsGwEndpoint))
+        {
+            args.Add("--flexipfs-gw-endpoint");
+            args.Add(cfg.FlexIpfsGwEndpoint);
+        }
 
         try
         {
-            _ = await AnsiConsole.Status()
+            var output = await AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
                 .StartAsync(L("Registering board..."), async _ => await RunProcessCaptureAsync(bbsNodePath, args, ct));
-            AnsiConsole.MarkupLine("[green]ok[/]");
+            var msg = output.StdOut.Trim();
+            AnsiConsole.MarkupLine(msg == "" ? "[green]ok[/]" : $"[green]{Markup.Escape(msg)}[/]");
         }
         catch (Exception ex)
         {
@@ -459,14 +473,16 @@ public static class InteractiveUi
                         break;
                     }
 
-                    var thread = AnsiConsole.Prompt(
-                        new SelectionPrompt<ThreadItem>()
-                            .Title(L("Select thread"))
-                            .PageSize(12)
-                            .MoreChoicesText($"[grey]{ML("(move up and down to reveal more threads)")}[/]")
-                            .AddChoices(threads)
-                            .UseConverter(t => $"{Markup.Escape(t.Thread.Title)}  [grey]{Markup.Escape(Short(t.ThreadId, 24))}[/]")
+                    var thread = PromptWithBack(
+                        L("Select thread"),
+                        threads,
+                        t => $"{Markup.Escape(t.Thread.Title)}  [grey]{Markup.Escape(Short(t.ThreadId, 24))}[/]",
+                        moreChoicesText: $"[grey]{ML("(move up and down to reveal more threads)")}[/]"
                     );
+                    if (thread == null)
+                    {
+                        break;
+                    }
 
                     await BrowseThreadAsync(api, keys, blocked, thread.ThreadId, ct);
                     break;
@@ -541,7 +557,7 @@ public static class InteractiveUi
                     : KeyValueMarkupAuto(L("Parent"), p.Post.ParentPostCid);
 
                 var body = p.Tombstoned
-                    ? $"[red][{ML("tombstoned")}][/]\n{Markup.Escape(p.TombstoneReason ?? "")}".TrimEnd()
+                    ? $"[red]{Markup.Escape($"[{L("tombstoned")}]")}[/]\n{Markup.Escape(p.TombstoneReason ?? "")}".TrimEnd()
                     : Markup.Escape(p.Post.Body.Content);
 
                 var lines = new List<string> { meta, cidLine, authorLine };
@@ -614,14 +630,16 @@ public static class InteractiveUi
         string? parent = null;
         if (visiblePosts.Count > 0 && AnsiConsole.Confirm(L("Reply to a specific post?"), false))
         {
-            var selected = AnsiConsole.Prompt(
-                new SelectionPrompt<ThreadPostItem>()
-                    .Title(L("Select parent post"))
-                    .PageSize(12)
-                    .MoreChoicesText($"[grey]{ML("(move up and down to reveal more posts)")}[/]")
-                    .AddChoices(visiblePosts)
-                    .UseConverter(p => $"{Markup.Escape(p.Post.DisplayName)}  [grey]{Markup.Escape(Short(p.Cid, 24))}[/]")
+            var selected = PromptWithBack(
+                L("Select parent post"),
+                visiblePosts,
+                p => $"{Markup.Escape(p.Post.DisplayName)}  [grey]{Markup.Escape(Short(p.Cid, 24))}[/]",
+                moreChoicesText: $"[grey]{ML("(move up and down to reveal more posts)")}[/]"
             );
+            if (selected == null)
+            {
+                return;
+            }
             parent = selected.Cid;
         }
 
@@ -716,14 +734,16 @@ public static class InteractiveUi
             return;
         }
 
-        var selected = AnsiConsole.Prompt(
-            new SelectionPrompt<ThreadPostItem>()
-                .Title(L("Select post to edit"))
-                .PageSize(12)
-                .MoreChoicesText($"[grey]{ML("(move up and down to reveal more posts)")}[/]")
-                .AddChoices(visiblePosts)
-                .UseConverter(p => $"{Markup.Escape(p.Post.DisplayName)}  [grey]{Markup.Escape(Short(p.Cid, 24))}[/]")
+        var selected = PromptWithBack(
+            L("Select post to edit"),
+            visiblePosts,
+            p => $"{Markup.Escape(p.Post.DisplayName)}  [grey]{Markup.Escape(Short(p.Cid, 24))}[/]",
+            moreChoicesText: $"[grey]{ML("(move up and down to reveal more posts)")}[/]"
         );
+        if (selected == null)
+        {
+            return;
+        }
 
         var displayName = EmptyToNull(AnsiConsole.Ask(L("Display name (optional, blank = keep)"), ""));
 
@@ -769,14 +789,16 @@ public static class InteractiveUi
             return;
         }
 
-        var selected = AnsiConsole.Prompt(
-            new SelectionPrompt<ThreadPostItem>()
-                .Title(L("Select post to tombstone"))
-                .PageSize(12)
-                .MoreChoicesText($"[grey]{ML("(move up and down to reveal more posts)")}[/]")
-                .AddChoices(visiblePosts)
-                .UseConverter(p => $"{Markup.Escape(p.Post.DisplayName)}  [grey]{Markup.Escape(Short(p.Cid, 24))}[/]")
+        var selected = PromptWithBack(
+            L("Select post to tombstone"),
+            visiblePosts,
+            p => $"{Markup.Escape(p.Post.DisplayName)}  [grey]{Markup.Escape(Short(p.Cid, 24))}[/]",
+            moreChoicesText: $"[grey]{ML("(move up and down to reveal more posts)")}[/]"
         );
+        if (selected == null)
+        {
+            return;
+        }
 
         var reason = EmptyToNull(AnsiConsole.Ask(L("Reason (optional)"), ""));
 
@@ -798,7 +820,7 @@ public static class InteractiveUi
         }
     }
 
-    private static async Task SearchPostsAsync(BbsApiClient api, KeyStore keys, BlockedStore blocked, CancellationToken ct)
+    private static async Task SearchAsync(BbsApiClient api, KeyStore keys, BlockedStore blocked, CancellationToken ct)
     {
         var q = AnsiConsole.Ask<string>(L("Query (q)"));
         var boardId = EmptyToNull(AnsiConsole.Ask(L("Board ID (optional)"), ""));
@@ -806,13 +828,18 @@ public static class InteractiveUi
         var since = EmptyToNull(AnsiConsole.Ask(L("Since (optional, RFC3339)"), ""));
         var until = EmptyToNull(AnsiConsole.Ask(L("Until (optional, RFC3339)"), ""));
 
-        var offset = 0;
+        const int resultsLimit = 10;
+        var postsOffset = 0;
         while (true)
         {
+            List<BoardItem> boards;
+            List<ThreadItem> threads;
             List<SearchPostResult> results;
             try
             {
-                results = await api.SearchPostsAsync(q, boardId, author, since, until, DefaultPageSize, offset, ct);
+                boards = await api.SearchBoardsAsync(q, resultsLimit, 0, ct);
+                threads = await api.SearchThreadsAsync(q, boardId, resultsLimit, 0, ct);
+                results = await api.SearchPostsAsync(q, boardId, author, since, until, DefaultPageSize, postsOffset, ct);
             }
             catch (Exception ex)
             {
@@ -822,12 +849,55 @@ public static class InteractiveUi
             }
 
             AnsiConsole.Clear();
-            AnsiConsole.Write(new Rule($"[bold]{ML("Search posts")}[/]").LeftJustified());
+            AnsiConsole.Write(new Rule($"[bold]{ML("Search")}[/]").LeftJustified());
             AnsiConsole.MarkupLine($"[grey]q:[/] {Markup.Escape(q)}");
             if (boardId != null) AnsiConsole.MarkupLine($"[grey]boardId:[/] {Markup.Escape(boardId)}");
-            if (author != null) AnsiConsole.MarkupLine($"[grey]author:[/] {Markup.Escape(Short(author, 24))}");
+            if (author != null) AnsiConsole.MarkupLine($"[grey]author:[/] {Markup.Escape(author)}");
             AnsiConsole.WriteLine();
 
+            AnsiConsole.MarkupLine($"[bold]{ML("Boards")}[/]");
+            var boardsTable = new Table().Border(TableBorder.Rounded);
+            boardsTable.Expand = true;
+            boardsTable.AddColumn("#");
+            boardsTable.AddColumn(L("BoardID"));
+            boardsTable.AddColumn(L("Title"));
+            boardsTable.AddColumn(L("MetaCID"));
+            for (var i = 0; i < boards.Count; i++)
+            {
+                var b = boards[i];
+                boardsTable.AddRow(
+                    (i + 1).ToString(),
+                    Markup.Escape(b.Board.BoardId),
+                    Markup.Escape(b.Board.Title),
+                    Markup.Escape(b.BoardMetaCid)
+                );
+            }
+            AnsiConsole.Write(boardsTable);
+            AnsiConsole.WriteLine();
+
+            AnsiConsole.MarkupLine($"[bold]{ML("Threads")}[/]");
+            var threadsTable = new Table().Border(TableBorder.Rounded);
+            threadsTable.Expand = true;
+            threadsTable.AddColumn("#");
+            threadsTable.AddColumn(L("Board"));
+            threadsTable.AddColumn(L("Title"));
+            threadsTable.AddColumn(L("ThreadID"));
+            threadsTable.AddColumn(L("CreatedAt"));
+            for (var i = 0; i < threads.Count; i++)
+            {
+                var t = threads[i];
+                threadsTable.AddRow(
+                    (i + 1).ToString(),
+                    Markup.Escape(t.Thread.BoardId),
+                    Markup.Escape(t.Thread.Title),
+                    Markup.Escape(t.ThreadId),
+                    Markup.Escape(FormatTimestamp(t.Thread.CreatedAt))
+                );
+            }
+            AnsiConsole.Write(threadsTable);
+            AnsiConsole.WriteLine();
+
+            AnsiConsole.MarkupLine($"[bold]{ML("Post")}[/]");
             var table = new Table().Border(TableBorder.Rounded);
             table.Expand = true;
             table.AddColumn("#");
@@ -840,10 +910,10 @@ public static class InteractiveUi
             {
                 var r = results[i];
             table.AddRow(
-                    (offset + i + 1).ToString(),
+                    (postsOffset + i + 1).ToString(),
                     Markup.Escape(r.BoardId),
-                    Markup.Escape(Short(r.ThreadId, 16)),
-                    Markup.Escape(Short(r.PostCid, 16)),
+                    Markup.Escape(r.ThreadId),
+                    Markup.Escape(r.PostCid),
                     Markup.Escape(r.DisplayName),
                     Markup.Escape(FormatTimestamp(r.CreatedAt))
                 );
@@ -853,11 +923,13 @@ public static class InteractiveUi
 
             var actions = new List<string>
             {
+                "Open board",
                 "Open thread",
+                "Open post",
                 "Block author",
                 "New search",
             };
-            if (offset > 0)
+            if (postsOffset > 0)
             {
                 actions.Add("Prev page");
             }
@@ -870,7 +942,53 @@ public static class InteractiveUi
             var action = AnsiConsole.Prompt(new SelectionPrompt<string>().Title(L("Action")).AddChoices(actions).UseConverter(L));
             switch (action)
             {
+                case "Open board":
+                {
+                    if (boards.Count == 0)
+                    {
+                        AnsiConsole.MarkupLine($"[grey]{ML("No results in this page.")}[/]");
+                        Pause();
+                        break;
+                    }
+
+                    var selected = PromptWithBack(
+                        L("Select board"),
+                        boards,
+                        b => $"{Markup.Escape(b.Board.BoardId)}  {Markup.Escape(b.Board.Title)}  [grey]{Markup.Escape(b.BoardMetaCid)}[/]",
+                        moreChoicesText: $"[grey]{ML("(move up and down to reveal more results)")}[/]"
+                    );
+                    if (selected == null)
+                    {
+                        break;
+                    }
+
+                    await BrowseThreadsAsync(api, keys, blocked, selected.Board.BoardId, selected.Board.Title, ct);
+                    break;
+                }
                 case "Open thread":
+                {
+                    if (threads.Count == 0)
+                    {
+                        AnsiConsole.MarkupLine($"[grey]{ML("No results in this page.")}[/]");
+                        Pause();
+                        break;
+                    }
+
+                    var selected = PromptWithBack(
+                        L("Select thread"),
+                        threads,
+                        t => $"{Markup.Escape(t.Thread.Title)}  [grey]{Markup.Escape(t.Thread.BoardId)} {Markup.Escape(t.ThreadId)}[/]",
+                        moreChoicesText: $"[grey]{ML("(move up and down to reveal more results)")}[/]"
+                    );
+                    if (selected == null)
+                    {
+                        break;
+                    }
+
+                    await BrowseThreadAsync(api, keys, blocked, selected.ThreadId, ct);
+                    break;
+                }
+                case "Open post":
                 {
                     if (results.Count == 0)
                     {
@@ -879,16 +997,16 @@ public static class InteractiveUi
                         break;
                     }
 
-                    var selected = AnsiConsole.Prompt(
-                        new SelectionPrompt<SearchPostResult>()
-                            .Title(L("Select result"))
-                            .PageSize(12)
-                            .MoreChoicesText($"[grey]{ML("(move up and down to reveal more results)")}[/]")
-                            .AddChoices(results)
-                            .UseConverter(r =>
-                                $"{Markup.Escape(r.DisplayName)}  [grey]{Markup.Escape(r.BoardId)} {Markup.Escape(Short(r.ThreadId, 16))} {Markup.Escape(Short(r.PostCid, 16))}[/]"
-                            )
+                    var selected = PromptWithBack(
+                        L("Select result"),
+                        results,
+                        r => $"{Markup.Escape(r.DisplayName)}  [grey]{Markup.Escape(r.BoardId)} {Markup.Escape(r.ThreadId)} {Markup.Escape(r.PostCid)}[/]",
+                        moreChoicesText: $"[grey]{ML("(move up and down to reveal more results)")}[/]"
                     );
+                    if (selected == null)
+                    {
+                        break;
+                    }
 
                     await BrowseThreadAsync(api, keys, blocked, selected.ThreadId, ct);
                     break;
@@ -902,14 +1020,16 @@ public static class InteractiveUi
                         break;
                     }
 
-                    var selected = AnsiConsole.Prompt(
-                        new SelectionPrompt<SearchPostResult>()
-                            .Title(L("Select author to block"))
-                            .PageSize(12)
-                            .MoreChoicesText($"[grey]{ML("(move up and down to reveal more results)")}[/]")
-                            .AddChoices(results)
-                            .UseConverter(r => $"{Markup.Escape(r.DisplayName)}  [grey]{Markup.Escape(Short(r.AuthorPubKey, 24))}[/]")
+                    var selected = PromptWithBack(
+                        L("Select author to block"),
+                        results,
+                        r => $"{Markup.Escape(r.DisplayName)}  [grey]{Markup.Escape(Short(r.AuthorPubKey, 24))}[/]",
+                        moreChoicesText: $"[grey]{ML("(move up and down to reveal more results)")}[/]"
                     );
+                    if (selected == null)
+                    {
+                        break;
+                    }
 
                     await blocked.AddAsync(selected.AuthorPubKey, ct);
                     AnsiConsole.MarkupLine($"[green]ok[/] blocked {Markup.Escape(Short(selected.AuthorPubKey, 24))}");
@@ -919,10 +1039,10 @@ public static class InteractiveUi
                 case "New search":
                     return;
                 case "Prev page":
-                    offset = Math.Max(0, offset - DefaultPageSize);
+                    postsOffset = Math.Max(0, postsOffset - DefaultPageSize);
                     break;
                 case "Next page":
-                    offset += DefaultPageSize;
+                    postsOffset += DefaultPageSize;
                     break;
                 case "Back":
                     return;
@@ -944,9 +1064,14 @@ public static class InteractiveUi
             table.Expand = true;
             table.AddColumn(L("Name"));
             table.AddColumn(L("Public key"));
+            table.AddColumn(L("Password"));
             foreach (var k in list)
             {
-                table.AddRow(Markup.Escape(k.Name), Markup.Escape(Short(k.Pub, 48)));
+                table.AddRow(
+                    Markup.Escape(k.Name),
+                    Markup.Escape(k.Pub),
+                    k.IsProtected ? $"[green]{ML("protected")}[/]" : $"[grey]{ML("none")}[/]"
+                );
             }
             AnsiConsole.Write(table);
             AnsiConsole.WriteLine();
@@ -954,7 +1079,7 @@ public static class InteractiveUi
             var action = AnsiConsole.Prompt(
                 new SelectionPrompt<string>()
                     .Title(L("Action"))
-                    .AddChoices("Generate", "Delete", "Back")
+                    .AddChoices("Generate", "Set password", "Remove password", "Delete", "Back")
                     .UseConverter(L)
             );
 
@@ -963,15 +1088,134 @@ public static class InteractiveUi
                 case "Generate":
                 {
                     var name = AnsiConsole.Ask(L("Key name"), "default");
+                    string? password = null;
+                    if (AnsiConsole.Confirm(L("Set a password now?"), false))
+                    {
+                        var p1 = AnsiConsole.Prompt(new TextPrompt<string>(L("New password")).Secret());
+                        if (string.IsNullOrWhiteSpace(p1))
+                        {
+                            break;
+                        }
+                        var p2 = AnsiConsole.Prompt(new TextPrompt<string>(L("Confirm password")).Secret());
+                        if (p1 != p2)
+                        {
+                            ShowError(new InvalidOperationException(L("Passwords do not match.")));
+                            Pause();
+                            break;
+                        }
+                        password = p1;
+                    }
+
                     try
                     {
-                        var created = await keys.GenerateAsync(name, ct);
+                        var created = await keys.GenerateAsync(name, password, ct);
                         AnsiConsole.MarkupLine($"[green]ok[/] {Markup.Escape(created.Name)} {Markup.Escape(created.Pub)}");
                     }
                     catch (Exception ex)
                     {
                         ShowError(ex);
                     }
+                    Pause();
+                    break;
+                }
+                case "Set password":
+                {
+                    if (list.Count == 0)
+                    {
+                        AnsiConsole.MarkupLine($"[grey]{ML("No keys found.")}[/]");
+                        Pause();
+                        break;
+                    }
+
+                    var selected = PromptWithBack(
+                        L("Select key"),
+                        list,
+                        k => k.IsProtected
+                            ? $"{Markup.Escape(k.Name)}  [green]{ML("protected")}[/]"
+                            : $"{Markup.Escape(k.Name)}  [grey]{ML("none")}[/]"
+                    );
+                    if (selected == null)
+                    {
+                        break;
+                    }
+
+                    try
+                    {
+                        if (selected.IsProtected)
+                        {
+                            var current = AnsiConsole.Prompt(new TextPrompt<string>(L("Current password")).Secret());
+                            var next = AnsiConsole.Prompt(new TextPrompt<string>(L("New password")).Secret());
+                            if (string.IsNullOrWhiteSpace(next))
+                            {
+                                break;
+                            }
+                            var confirm = AnsiConsole.Prompt(new TextPrompt<string>(L("Confirm password")).Secret());
+                            if (next != confirm)
+                            {
+                                throw new InvalidOperationException(L("Passwords do not match."));
+                            }
+                            await keys.ChangePasswordAsync(selected.Name, current, next, ct);
+                            AnsiConsole.MarkupLine("[green]ok[/]");
+                        }
+                        else
+                        {
+                            var next = AnsiConsole.Prompt(new TextPrompt<string>(L("New password")).Secret());
+                            if (string.IsNullOrWhiteSpace(next))
+                            {
+                                break;
+                            }
+                            var confirm = AnsiConsole.Prompt(new TextPrompt<string>(L("Confirm password")).Secret());
+                            if (next != confirm)
+                            {
+                                throw new InvalidOperationException(L("Passwords do not match."));
+                            }
+                            await keys.ProtectAsync(selected.Name, next, ct);
+                            AnsiConsole.MarkupLine("[green]ok[/]");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        ShowError(ex);
+                    }
+
+                    Pause();
+                    break;
+                }
+                case "Remove password":
+                {
+                    var protectedKeys = list.Where(k => k.IsProtected).ToList();
+                    if (protectedKeys.Count == 0)
+                    {
+                        AnsiConsole.MarkupLine($"[grey]{ML("No password-protected keys.")}[/]");
+                        Pause();
+                        break;
+                    }
+
+                    var selected = PromptWithBack(
+                        L("Select key"),
+                        protectedKeys,
+                        k => $"{Markup.Escape(k.Name)}  [green]{ML("protected")}[/]"
+                    );
+                    if (selected == null)
+                    {
+                        break;
+                    }
+
+                    try
+                    {
+                        var password = AnsiConsole.Prompt(new TextPrompt<string>(L("Password")).Secret());
+                        if (string.IsNullOrWhiteSpace(password))
+                        {
+                            break;
+                        }
+                        await keys.UnprotectAsync(selected.Name, password, ct);
+                        AnsiConsole.MarkupLine("[green]ok[/]");
+                    }
+                    catch (Exception ex)
+                    {
+                        ShowError(ex);
+                    }
+
                     Pause();
                     break;
                 }
@@ -983,13 +1227,15 @@ public static class InteractiveUi
                         Pause();
                         break;
                     }
-                    var selected = AnsiConsole.Prompt(
-                        new SelectionPrompt<KeyEntry>()
-                            .Title(L("Select key to delete"))
-                            .PageSize(12)
-                            .AddChoices(list)
-                            .UseConverter(k => $"{Markup.Escape(k.Name)}  [grey]{Markup.Escape(Short(k.Pub, 24))}[/]")
+                    var selected = PromptWithBack(
+                        L("Select key to delete"),
+                        list,
+                        k => $"{Markup.Escape(k.Name)}  [grey]{Markup.Escape(Short(k.Pub, 24))}[/]"
                     );
+                    if (selected == null)
+                    {
+                        break;
+                    }
                     if (!AnsiConsole.Confirm(F("Delete '{0}'?", selected.Name), false))
                     {
                         break;
@@ -1061,13 +1307,15 @@ public static class InteractiveUi
                         Pause();
                         break;
                     }
-                    var selected = AnsiConsole.Prompt(
-                        new SelectionPrompt<string>()
-                            .Title(L("Select key to remove"))
-                            .PageSize(12)
-                            .AddChoices(list)
-                            .UseConverter(Markup.Escape)
+                    var selected = PromptWithBack(
+                        L("Select key to remove"),
+                        list,
+                        Markup.Escape
                     );
+                    if (selected == null)
+                    {
+                        break;
+                    }
                     await blocked.RemoveAsync(selected, ct);
                     AnsiConsole.MarkupLine("[green]ok[/]");
                     Pause();
@@ -1088,14 +1336,16 @@ public static class InteractiveUi
             return;
         }
 
-        var selected = AnsiConsole.Prompt(
-            new SelectionPrompt<ThreadPostItem>()
-                .Title(L("Select post"))
-                .PageSize(12)
-                .MoreChoicesText($"[grey]{ML("(move up and down to reveal more posts)")}[/]")
-                .AddChoices(visiblePosts)
-                .UseConverter(p => $"{Markup.Escape(p.Post.DisplayName)}  [grey]{Markup.Escape(Short(p.Post.AuthorPubKey, 24))}[/]")
+        var selected = PromptWithBack(
+            L("Select post"),
+            visiblePosts,
+            p => $"{Markup.Escape(p.Post.DisplayName)}  [grey]{Markup.Escape(Short(p.Post.AuthorPubKey, 24))}[/]",
+            moreChoicesText: $"[grey]{ML("(move up and down to reveal more posts)")}[/]"
         );
+        if (selected == null)
+        {
+            return;
+        }
 
         await blocked.AddAsync(selected.Post.AuthorPubKey, ct);
         AnsiConsole.MarkupLine($"[green]ok[/] blocked {Markup.Escape(Short(selected.Post.AuthorPubKey, 24))}");
@@ -1117,7 +1367,23 @@ public static class InteractiveUi
             var name = AnsiConsole.Ask(L("Key name"), "default");
             try
             {
-                return await keys.GenerateAsync(name, ct);
+                string? password = null;
+                if (AnsiConsole.Confirm(L("Set a password now?"), false))
+                {
+                    var p1 = AnsiConsole.Prompt(new TextPrompt<string>(L("New password")).Secret());
+                    if (string.IsNullOrWhiteSpace(p1))
+                    {
+                        return null;
+                    }
+                    var p2 = AnsiConsole.Prompt(new TextPrompt<string>(L("Confirm password")).Secret());
+                    if (p1 != p2)
+                    {
+                        throw new InvalidOperationException(L("Passwords do not match."));
+                    }
+                    password = p1;
+                }
+
+                return await keys.GenerateAsync(name, password, ct);
             }
             catch (Exception ex)
             {
@@ -1127,14 +1393,48 @@ public static class InteractiveUi
             }
         }
 
-        return AnsiConsole.Prompt(
-            new SelectionPrompt<KeyEntry>()
-                .Title(L("Select key"))
-                .PageSize(12)
-                .MoreChoicesText($"[grey]{ML("(move up and down to reveal more keys)")}[/]")
-                .AddChoices(list)
-                .UseConverter(k => $"{Markup.Escape(k.Name)}  [grey]{Markup.Escape(Short(k.Pub, 32))}[/]")
+        var selected = PromptWithBack(
+            L("Select key"),
+            list,
+            k => k.IsProtected
+                ? $"{Markup.Escape(k.Name)}  [green]{ML("protected")}[/] [grey]{Markup.Escape(Short(k.Pub, 32))}[/]"
+                : $"{Markup.Escape(k.Name)}  [grey]{Markup.Escape(Short(k.Pub, 32))}[/]",
+            moreChoicesText: $"[grey]{ML("(move up and down to reveal more keys)")}[/]"
         );
+        if (selected == null)
+        {
+            return null;
+        }
+
+        if (!selected.IsProtected)
+        {
+            return selected;
+        }
+
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            var pw = AnsiConsole.Prompt(new TextPrompt<string>(L("Password")).Secret());
+            if (string.IsNullOrWhiteSpace(pw))
+            {
+                return null;
+            }
+            try
+            {
+                var priv = KeyStore.DecryptPriv(selected, pw);
+                return selected with { Priv = priv };
+            }
+            catch (Exception ex)
+            {
+                if (attempt >= 3)
+                {
+                    ShowError(ex);
+                    Pause();
+                    return null;
+                }
+                AnsiConsole.MarkupLine($"[red]{ML("Error")}:[/] {Markup.Escape(ex.Message)}");
+            }
+        }
+        return null;
     }
 
     private static async Task<ClientConfig> SettingsMenuAsync(
@@ -2141,7 +2441,32 @@ public static class InteractiveUi
         return last;
     }
 
-    private sealed record Choice<T>(string Label, T? Value) where T : class;
+    private sealed record Choice<T>(string Label, T? Value, bool IsBack) where T : class;
+
+    private static T? PromptWithBack<T>(
+        string title,
+        IReadOnlyList<T> items,
+        Func<T, string> render,
+        string? moreChoicesText = null,
+        int pageSize = 12
+    ) where T : class
+    {
+        var choices = items.Select(i => new Choice<T>(render(i), i, false)).ToList();
+        choices.Add(new Choice<T>($"[grey]{ML("Back")}[/]", null, true));
+
+        var prompt = new SelectionPrompt<Choice<T>>()
+            .Title(title)
+            .PageSize(pageSize)
+            .AddChoices(choices)
+            .UseConverter(c => c.Label);
+        if (!string.IsNullOrWhiteSpace(moreChoicesText))
+        {
+            prompt.MoreChoicesText(moreChoicesText);
+        }
+
+        var selected = AnsiConsole.Prompt(prompt);
+        return selected.IsBack ? null : selected.Value;
+    }
 
     private static string FormatTimestamp(string? rfc3339)
     {

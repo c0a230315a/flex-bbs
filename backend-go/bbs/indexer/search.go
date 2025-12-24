@@ -16,6 +16,40 @@ type SearchPostsParams struct {
 	Offset       int
 }
 
+type SearchBoardsParams struct {
+	Query  string
+	Limit  int
+	Offset int
+}
+
+type SearchBoardResult struct {
+	BoardID      string  `json:"boardId"`
+	BoardMetaCID string  `json:"boardMetaCid"`
+	Title        string  `json:"title"`
+	Description  string  `json:"description"`
+	CreatedAt    string  `json:"createdAt"`
+	CreatedBy    string  `json:"createdBy"`
+	Signature    string  `json:"signature"`
+	LogHeadCID   *string `json:"logHeadCid"`
+}
+
+type SearchThreadsParams struct {
+	Query  string
+	BoardID string
+	Limit  int
+	Offset int
+}
+
+type SearchThreadResult struct {
+	ThreadID    string `json:"threadId"`
+	BoardID     string `json:"boardId"`
+	Title       string `json:"title"`
+	RootPostCID string `json:"rootPostCid"`
+	CreatedAt   string `json:"createdAt"`
+	CreatedBy   string `json:"createdBy"`
+	Signature   string `json:"signature"`
+}
+
 type SearchPostResult struct {
 	PostCID      string  `json:"postCid"`
 	ThreadID     string  `json:"threadId"`
@@ -115,6 +149,156 @@ func (i *Indexer) SearchPosts(ctx context.Context, p SearchPostsParams) ([]Searc
 		}
 		if edited.Valid {
 			r.EditedAt = &edited.String
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (i *Indexer) SearchBoards(ctx context.Context, p SearchBoardsParams) ([]SearchBoardResult, error) {
+	if i.db == nil {
+		return nil, ErrIndexerClosed
+	}
+
+	if p.Limit <= 0 {
+		p.Limit = 50
+	}
+	if p.Limit > 200 {
+		p.Limit = 200
+	}
+	if p.Offset < 0 {
+		p.Offset = 0
+	}
+
+	var (
+		where []string
+		args  []any
+	)
+	if p.Query != "" {
+		where = append(where, "(board_id LIKE ? OR title LIKE ? OR description LIKE ?)")
+		q := "%" + p.Query + "%"
+		args = append(args, q, q, q)
+	}
+
+	q := `
+		SELECT
+			board_id,
+			board_meta_cid,
+			title,
+			description,
+			created_at,
+			created_by,
+			signature,
+			log_head_cid
+		FROM boards
+	`
+	if len(where) > 0 {
+		q += " WHERE " + strings.Join(where, " AND ")
+	}
+	q += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	args = append(args, p.Limit, p.Offset)
+
+	rows, err := i.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []SearchBoardResult
+	for rows.Next() {
+		var r SearchBoardResult
+		var logHead sql.NullString
+		if err := rows.Scan(
+			&r.BoardID,
+			&r.BoardMetaCID,
+			&r.Title,
+			&r.Description,
+			&r.CreatedAt,
+			&r.CreatedBy,
+			&r.Signature,
+			&logHead,
+		); err != nil {
+			return nil, err
+		}
+		if logHead.Valid {
+			r.LogHeadCID = &logHead.String
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (i *Indexer) SearchThreads(ctx context.Context, p SearchThreadsParams) ([]SearchThreadResult, error) {
+	if i.db == nil {
+		return nil, ErrIndexerClosed
+	}
+
+	if p.Limit <= 0 {
+		p.Limit = 50
+	}
+	if p.Limit > 200 {
+		p.Limit = 200
+	}
+	if p.Offset < 0 {
+		p.Offset = 0
+	}
+
+	var (
+		where []string
+		args  []any
+	)
+	if p.BoardID != "" {
+		where = append(where, "board_id = ?")
+		args = append(args, p.BoardID)
+	}
+	if p.Query != "" {
+		where = append(where, "(title LIKE ? OR thread_id LIKE ?)")
+		q := "%" + p.Query + "%"
+		args = append(args, q, q)
+	}
+
+	q := `
+		SELECT
+			thread_id,
+			board_id,
+			title,
+			root_post_cid,
+			created_at,
+			created_by,
+			signature
+		FROM threads
+	`
+	if len(where) > 0 {
+		q += " WHERE " + strings.Join(where, " AND ")
+	}
+	q += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	args = append(args, p.Limit, p.Offset)
+
+	rows, err := i.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []SearchThreadResult
+	for rows.Next() {
+		var r SearchThreadResult
+		if err := rows.Scan(
+			&r.ThreadID,
+			&r.BoardID,
+			&r.Title,
+			&r.RootPostCID,
+			&r.CreatedAt,
+			&r.CreatedBy,
+			&r.Signature,
+		); err != nil {
+			return nil, err
 		}
 		out = append(out, r)
 	}

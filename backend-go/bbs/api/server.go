@@ -37,6 +37,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/posts", s.addPost)
 	mux.HandleFunc("POST /api/v1/posts/{postCid}/edit", s.editPost)
 	mux.HandleFunc("POST /api/v1/posts/{postCid}/tombstone", s.tombstonePost)
+	mux.HandleFunc("GET /api/v1/search/boards", s.searchBoards)
+	mux.HandleFunc("GET /api/v1/search/threads", s.searchThreads)
 	mux.HandleFunc("GET /api/v1/search/posts", s.searchPosts)
 
 	return mux
@@ -771,6 +773,87 @@ func (s *Server) searchPosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, results)
+}
+
+func (s *Server) searchBoards(w http.ResponseWriter, r *http.Request) {
+	if s.Indexer == nil {
+		writeError(w, http.StatusNotImplemented, "search is available in indexer/full roles")
+		return
+	}
+	ctx := r.Context()
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	limit, offset := parseLimitOffset(r, 50, 0, 200)
+
+	results, err := s.Indexer.SearchBoards(ctx, bbsindexer.SearchBoardsParams{
+		Query:  q,
+		Limit:  limit,
+		Offset: offset,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	out := make([]BoardItem, 0, len(results))
+	for _, b := range results {
+		out = append(out, BoardItem{
+			BoardMetaCID: b.BoardMetaCID,
+			Board: types.BoardMeta{
+				Version:     types.Version1,
+				Type:        types.TypeBoardMeta,
+				BoardID:     b.BoardID,
+				Title:       b.Title,
+				Description: b.Description,
+				LogHeadCID:  b.LogHeadCID,
+				CreatedAt:   b.CreatedAt,
+				CreatedBy:   b.CreatedBy,
+				Signature:   b.Signature,
+			},
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) searchThreads(w http.ResponseWriter, r *http.Request) {
+	if s.Indexer == nil {
+		writeError(w, http.StatusNotImplemented, "search is available in indexer/full roles")
+		return
+	}
+	ctx := r.Context()
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	boardID := strings.TrimSpace(r.URL.Query().Get("boardId"))
+	limit, offset := parseLimitOffset(r, 50, 0, 200)
+
+	results, err := s.Indexer.SearchThreads(ctx, bbsindexer.SearchThreadsParams{
+		Query:   q,
+		BoardID: boardID,
+		Limit:   limit,
+		Offset:  offset,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	out := make([]ThreadItem, 0, len(results))
+	for _, t := range results {
+		out = append(out, ThreadItem{
+			ThreadID:      t.ThreadID,
+			ThreadMetaCID: t.ThreadID,
+			Thread: types.ThreadMeta{
+				Version:     types.Version1,
+				Type:        types.TypeThreadMeta,
+				ThreadID:    t.ThreadID,
+				BoardID:     t.BoardID,
+				Title:       t.Title,
+				RootPostCID: t.RootPostCID,
+				CreatedAt:   t.CreatedAt,
+				CreatedBy:   t.CreatedBy,
+				Signature:   t.Signature,
+			},
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) loadBoardByID(ctx context.Context, boardID string) (refCID string, bm *types.BoardMeta, ok bool) {
