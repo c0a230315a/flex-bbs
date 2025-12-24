@@ -60,6 +60,13 @@ GitHub Actions で OS 別の「全部入りバンドル」を作成します。�
   - Windows: `bbs-client.exe` をダブルクリック
   - Linux/macOS: `./bbs-client`（または `./bbs-client ui`）
 
+**文字化け対策（UTF-8）**
+
+TUI は UTF-8 前提で、非 ASCII（日本語など）の表示に対応しています。文字化けする場合は以下を確認してください:
+
+- Windows: Windows Terminal / PowerShell 推奨。`cmd.exe` の場合は起動前に `chcp 65001` を実行してください。
+- Linux/macOS: ロケールが UTF-8 になっているか確認してください（例: `echo $LANG` に `UTF-8` が含まれる）。
+
 ## コマンド操作（CLI）
 
 ### bbs-node（バックエンド）
@@ -97,6 +104,7 @@ GitHub Actions で OS 別の「全部入りバンドル」を作成します。�
 - 板の追加: `Browse boards` → `Add board` → `Board ID` と `BoardMeta CID` を入力
 - 重要な設定（Settings）:
   - `Client / Backend` → `Backend role (managed)` を `client|indexer|archiver|full` から選択
+  - `Language` → `UI language`（`auto|en|ja`）
   - `Flexible-IPFS` → `Use mDNS on LAN...`（mDNS）
   - `Flexible-IPFS` → `ipfs.endpoint override`（手動でピア接続したい場合）
 

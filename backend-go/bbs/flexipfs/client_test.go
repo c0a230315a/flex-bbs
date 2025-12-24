@@ -246,6 +246,72 @@ func TestPutValueWithAttr_FallsBackWithoutAttrs_OnUnknownMultihashType(t *testin
 	}
 }
 
+func TestPutValueWithAttr_FallsBackWithoutAttrs_OnEOF(t *testing.T) {
+	var (
+		putCalls int
+		gotAttrs []string
+	)
+	errCh := make(chan error, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v0/dht/peerlist":
+			_, _ = w.Write([]byte(`"peer1"`))
+		case "/api/v0/dht/putvaluewithattr":
+			putCalls++
+			attrs := r.URL.Query().Get("attrs")
+			gotAttrs = append(gotAttrs, attrs)
+			if attrs != "" {
+				hj, ok := w.(http.Hijacker)
+				if !ok {
+					select {
+					case errCh <- errors.New("ResponseWriter does not implement Hijacker"):
+					default:
+					}
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				conn, _, err := hj.Hijack()
+				if err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				_ = conn.Close()
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"CID_file": "baf_test",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New(srv.URL + "/api/v0")
+	cid, err := c.PutValueWithAttr(context.Background(), "v", []string{"post_1"}, []string{"board_bbs.general"})
+	if err != nil {
+		t.Fatalf("PutValueWithAttr: %v", err)
+	}
+	select {
+	case err := <-errCh:
+		t.Fatalf("handler error: %v", err)
+	default:
+	}
+	if cid != "baf_test" {
+		t.Fatalf("cid mismatch: %q", cid)
+	}
+	if putCalls != 2 {
+		t.Fatalf("expected 2 put attempts, got %d", putCalls)
+	}
+	if len(gotAttrs) != 2 || gotAttrs[0] == "" || gotAttrs[1] != "" {
+		t.Fatalf("attrs should be sent first then omitted: %#v", gotAttrs)
+	}
+}
+
 func TestHttpError_UsesTrailerKeysAsMessage(t *testing.T) {
 	trailer := http.Header{}
 	trailer["No+target+node+found.%0A"] = nil

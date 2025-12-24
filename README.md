@@ -57,6 +57,13 @@ GitHub Actions builds OS‑specific bundles that include everything needed:
 - Windows: double-click `bbs-client.exe`
 - Linux/macOS: `./bbs-client` (or `./bbs-client ui`)
 
+**Unicode / UTF-8 note**
+
+The TUI is UTF-8 and supports non-ASCII text (e.g. Japanese). If you see mojibake:
+
+- Windows: prefer Windows Terminal / PowerShell. In legacy `cmd.exe`, run `chcp 65001` before launching.
+- Linux/macOS: ensure your locale is UTF-8 (e.g. `echo $LANG` contains `UTF-8`).
+
 ## CLI usage (commands)
 
 ### `bbs-node`
@@ -88,6 +95,7 @@ GitHub Actions builds OS‑specific bundles that include everything needed:
 - Add board: `Browse boards` → `Add board` (enter `Board ID` + `BoardMeta CID`)
 - Settings highlights:
   - `Client / Backend` → `Backend role (managed)` (`client|indexer|archiver|full`)
+  - `Language` → `UI language` (`auto|en|ja`)
   - `Flexible-IPFS` → `Use mDNS on LAN...`
   - `Flexible-IPFS` → `ipfs.endpoint override` (manual peer connection)
 

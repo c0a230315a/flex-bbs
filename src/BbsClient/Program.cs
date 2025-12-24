@@ -2,8 +2,19 @@ using BbsClient.Api;
 using BbsClient.Storage;
 using BbsClient.Ui;
 using BbsClient.Util;
+using System.Text;
 
 var ct = CancellationToken.None;
+
+try
+{
+    var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+    Console.OutputEncoding = utf8;
+    Console.InputEncoding = utf8;
+}
+catch
+{
+}
 
 if (args.Any(a => a is "-h" or "--help"))
 {

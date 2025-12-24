@@ -10,6 +10,12 @@ namespace BbsClient.Ui;
 public static class InteractiveUi
 {
     private const int DefaultPageSize = 50;
+    private static UiLocalizer _loc = UiLocalizer.Create("auto");
+
+    private static string L(string text) => _loc.L(text);
+    private static string ML(string text) => Markup.Escape(L(text));
+    private static string F(string format, params object[] args) => _loc.F(format, args);
+    private static void SetLanguage(string? languageSetting) => _loc = UiLocalizer.Create(languageSetting);
 
     public static async Task<int> RunAsync(
         ClientConfigStore configStore,
@@ -18,13 +24,15 @@ public static class InteractiveUi
         CancellationToken ct
     )
     {
+        var cfg = initialConfig.Normalize();
+        SetLanguage(cfg.UiLanguage);
+
         if (Console.IsInputRedirected || Console.IsOutputRedirected)
         {
-            Console.Error.WriteLine("ui requires an interactive terminal (no redirection).");
+            Console.Error.WriteLine(L("ui requires an interactive terminal (no redirection)."));
             return 2;
         }
 
-        var cfg = initialConfig.Normalize();
         AppLog.Init(cfg.DataDir);
 
         using var http = new HttpClient();
@@ -38,7 +46,7 @@ public static class InteractiveUi
             var bbsNodePath = cfg.BbsNodePath ?? BbsNodePathResolver.Resolve();
             await AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
-                .StartAsync("Ensuring backend is running...", async _ =>
+                .StartAsync(L("Ensuring backend is running..."), async _ =>
                 {
                     await launcher.EnsureRunningAsync(cfg.BackendBaseUrl, cfg.StartBackend, bbsNodePath, BbsNodeArgsBuilder.Build(cfg), ct);
                 });
@@ -54,20 +62,21 @@ public static class InteractiveUi
             var healthy = await BackendLauncher.IsHealthyAsync(cfg.BackendBaseUrl, ct);
 
             AnsiConsole.Clear();
-            AnsiConsole.Write(new Rule("[bold]Flex BBS Client[/]").LeftJustified());
-            AnsiConsole.MarkupLine($"[grey]Backend:[/] {Markup.Escape(cfg.BackendBaseUrl)} [{(healthy ? "green" : "red")}]{(healthy ? "up" : "down")}[/]");
-            AnsiConsole.MarkupLine($"[grey]Backend role (managed):[/] {Markup.Escape(cfg.BackendRole)}");
-            AnsiConsole.MarkupLine($"[grey]Data dir:[/] {Markup.Escape(cfg.DataDir)}");
+            AnsiConsole.Write(new Rule($"[bold]{ML("Flex BBS Client")}[/]").LeftJustified());
+            AnsiConsole.MarkupLine($"[grey]{ML("Backend")}:[/] {Markup.Escape(cfg.BackendBaseUrl)} [{(healthy ? "green" : "red")}]{ML(healthy ? "up" : "down")}[/]");
+            AnsiConsole.MarkupLine($"[grey]{ML("Backend role (managed)")}:[/] {Markup.Escape(cfg.BackendRole)}");
+            AnsiConsole.MarkupLine($"[grey]{ML("Data dir")}:[/] {Markup.Escape(cfg.DataDir)}");
             if (!string.IsNullOrWhiteSpace(backendStartError) && !healthy)
             {
-                AnsiConsole.MarkupLine($"[red]Backend:[/] {Markup.Escape(backendStartError)}");
+                AnsiConsole.MarkupLine($"[red]{ML("Backend")}:[/] {Markup.Escape(backendStartError)}");
             }
             AnsiConsole.WriteLine();
 
             var choice = AnsiConsole.Prompt(
                 new SelectionPrompt<string>()
-                    .Title("Main menu")
+                    .Title(L("Main menu"))
                     .AddChoices("Browse boards", "Search posts", "Keys", "Blocked", "Settings", "Quit")
+                    .UseConverter(L)
             );
 
             try
@@ -92,6 +101,7 @@ public static class InteractiveUi
                         if (updated != cfg)
                         {
                             cfg = updated.Normalize();
+                            SetLanguage(cfg.UiLanguage);
                             api = new BbsApiClient(http, cfg.BackendBaseUrl);
                             keys = new KeyStore(Path.Combine(cfg.DataDir, "keys.json"));
                             blocked = new BlockedStore(Path.Combine(cfg.DataDir, "blockedPubKeys.json"));
@@ -120,7 +130,7 @@ public static class InteractiveUi
         while (true)
         {
             AnsiConsole.Clear();
-            AnsiConsole.Write(new Rule("[bold]Boards[/]").LeftJustified());
+            AnsiConsole.Write(new Rule($"[bold]{ML("Boards")}[/]").LeftJustified());
 
             List<BoardItem> boards;
             try
@@ -139,15 +149,16 @@ public static class InteractiveUi
                 .ToList();
 
             var table = new Table().Border(TableBorder.Rounded);
-            table.AddColumn("BoardID");
-            table.AddColumn("Title");
-            table.AddColumn("MetaCID");
+            table.Expand = true;
+            table.AddColumn(L("BoardID"));
+            table.AddColumn(L("Title"));
+            table.AddColumn(L("MetaCID"));
             foreach (var b in boards)
             {
                 table.AddRow(
                     Markup.Escape(b.Board.BoardId),
                     Markup.Escape(b.Board.Title),
-                    Markup.Escape(WrapToken(b.BoardMetaCid, 24))
+                    Markup.Escape(b.BoardMetaCid)
                 );
             }
             AnsiConsole.Write(table);
@@ -155,7 +166,7 @@ public static class InteractiveUi
 
             if (boards.Count == 0)
             {
-                AnsiConsole.MarkupLine("[grey]No boards found.[/]");
+                AnsiConsole.MarkupLine($"[grey]{ML("No boards found.")}[/]");
                 AnsiConsole.WriteLine();
             }
 
@@ -167,7 +178,7 @@ public static class InteractiveUi
                 "Refresh",
                 "Back",
             };
-            var action = AnsiConsole.Prompt(new SelectionPrompt<string>().Title("Action").AddChoices(actions));
+            var action = AnsiConsole.Prompt(new SelectionPrompt<string>().Title(L("Action")).AddChoices(actions).UseConverter(L));
 
             switch (action)
             {
@@ -175,16 +186,16 @@ public static class InteractiveUi
                 {
                     if (boards.Count == 0)
                     {
-                        AnsiConsole.MarkupLine("[grey]No boards to open.[/]");
+                        AnsiConsole.MarkupLine($"[grey]{ML("No boards to open.")}[/]");
                         Pause();
                         break;
                     }
 
                     var selected = AnsiConsole.Prompt(
                         new SelectionPrompt<BoardItem>()
-                            .Title("Select board")
+                            .Title(L("Select board"))
                             .PageSize(12)
-                            .MoreChoicesText("[grey](move up and down to reveal more boards)[/]")
+                            .MoreChoicesText($"[grey]{ML("(move up and down to reveal more boards)")}[/]")
                             .AddChoices(boards)
                             .UseConverter(b => $"{Markup.Escape(b.Board.BoardId)}  {Markup.Escape(b.Board.Title)}  [grey]{Markup.Escape(Short(b.BoardMetaCid, 24))}[/]")
                     );
@@ -211,7 +222,7 @@ public static class InteractiveUi
         var bbsNodePath = cfg.BbsNodePath ?? BbsNodePathResolver.Resolve();
         if (string.IsNullOrWhiteSpace(bbsNodePath))
         {
-            AnsiConsole.MarkupLine("[red]bbs-node not found.[/] Set it in Settings → Client / Backend.");
+            AnsiConsole.MarkupLine($"[red]{ML("bbs-node not found.")}[/] {ML("Set it in Settings → Client / Backend.")}");
             Pause();
             return;
         }
@@ -222,37 +233,37 @@ public static class InteractiveUi
             return;
         }
 
-        var boardId = AnsiConsole.Ask<string>("Board ID (e.g. bbs.general)");
+        var boardId = AnsiConsole.Ask<string>(L("Board ID (e.g. bbs.general)"));
         if (string.IsNullOrWhiteSpace(boardId))
         {
-            AnsiConsole.MarkupLine("[yellow]Board ID is empty. Canceled.[/]");
+            AnsiConsole.MarkupLine($"[yellow]{ML("Board ID is empty. Canceled.")}[/]");
             Pause();
             return;
         }
         boardId = boardId.Trim();
 
-        var title = AnsiConsole.Ask<string>("Title");
+        var title = AnsiConsole.Ask<string>(L("Title"));
         if (string.IsNullOrWhiteSpace(title))
         {
-            AnsiConsole.MarkupLine("[yellow]Title is empty. Canceled.[/]");
+            AnsiConsole.MarkupLine($"[yellow]{ML("Title is empty. Canceled.")}[/]");
             Pause();
             return;
         }
         title = title.Trim();
 
-        var description = EmptyToNull(AnsiConsole.Ask("Description (optional)", ""));
+        var description = EmptyToNull(AnsiConsole.Ask(L("Description (optional)"), ""));
 
         AnsiConsole.WriteLine();
-        AnsiConsole.MarkupLine($"[grey]BoardID:[/] {Markup.Escape(boardId)}");
-        AnsiConsole.MarkupLine($"[grey]Title:[/] {Markup.Escape(title)}");
+        AnsiConsole.MarkupLine($"[grey]{ML("BoardID")}:[/] {Markup.Escape(boardId)}");
+        AnsiConsole.MarkupLine($"[grey]{ML("Title")}:[/] {Markup.Escape(title)}");
         if (description != null)
         {
-            AnsiConsole.MarkupLine($"[grey]Description:[/] {Markup.Escape(description)}");
+            AnsiConsole.MarkupLine($"[grey]{ML("Description")}:[/] {Markup.Escape(description)}");
         }
-        AnsiConsole.MarkupLine($"[grey]Author key:[/] {Markup.Escape(key.Name)}  [grey]{Markup.Escape(Short(key.Pub, 32))}[/]");
+        AnsiConsole.MarkupLine($"[grey]{ML("Author key")}:[/] {Markup.Escape(key.Name)}  [grey]{Markup.Escape(Short(key.Pub, 32))}[/]");
         AnsiConsole.WriteLine();
 
-        if (!AnsiConsole.Confirm("Create this board and register it locally (boards.json)?", true))
+        if (!AnsiConsole.Confirm(L("Create this board and register it locally (boards.json)?"), true))
         {
             return;
         }
@@ -289,7 +300,7 @@ public static class InteractiveUi
         {
             var output = await AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
-                .StartAsync("Creating board...", async _ => await RunProcessCaptureAsync(bbsNodePath, args, ct));
+                .StartAsync(L("Creating board..."), async _ => await RunProcessCaptureAsync(bbsNodePath, args, ct));
             var cid = TryExtractCid(output.StdOut) ?? "";
             if (cid == "")
             {
@@ -313,23 +324,23 @@ public static class InteractiveUi
         var bbsNodePath = cfg.BbsNodePath ?? BbsNodePathResolver.Resolve();
         if (string.IsNullOrWhiteSpace(bbsNodePath))
         {
-            AnsiConsole.MarkupLine("[red]bbs-node not found.[/] Set it in Settings → Client / Backend.");
+            AnsiConsole.MarkupLine($"[red]{ML("bbs-node not found.")}[/] {ML("Set it in Settings → Client / Backend.")}");
             Pause();
             return;
         }
 
-        var boardId = AnsiConsole.Ask<string>("Board ID");
-        var boardMetaCid = AnsiConsole.Ask<string>("BoardMeta CID");
+        var boardId = AnsiConsole.Ask<string>(L("Board ID"));
+        var boardMetaCid = AnsiConsole.Ask<string>(L("BoardMeta CID"));
         if (string.IsNullOrWhiteSpace(boardId) || string.IsNullOrWhiteSpace(boardMetaCid))
         {
-            AnsiConsole.MarkupLine("[yellow]Board ID / CID is empty. Canceled.[/]");
+            AnsiConsole.MarkupLine($"[yellow]{ML("Board ID / CID is empty. Canceled.")}[/]");
             Pause();
             return;
         }
         boardId = boardId.Trim();
         boardMetaCid = boardMetaCid.Trim();
 
-        if (!AnsiConsole.Confirm("Register this board locally (boards.json)?", true))
+        if (!AnsiConsole.Confirm(L("Register this board locally (boards.json)?"), true))
         {
             return;
         }
@@ -346,7 +357,7 @@ public static class InteractiveUi
         {
             _ = await AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
-                .StartAsync("Registering board...", async _ => await RunProcessCaptureAsync(bbsNodePath, args, ct));
+                .StartAsync(L("Registering board..."), async _ => await RunProcessCaptureAsync(bbsNodePath, args, ct));
             AnsiConsole.MarkupLine("[green]ok[/]");
         }
         catch (Exception ex)
@@ -370,7 +381,7 @@ public static class InteractiveUi
         while (true)
         {
             AnsiConsole.Clear();
-            AnsiConsole.Write(new Rule($"[bold]Threads[/] [grey]{Markup.Escape(boardId)}[/]").LeftJustified());
+            AnsiConsole.Write(new Rule($"[bold]{ML("Threads")}[/] [grey]{Markup.Escape(boardId)}[/]").LeftJustified());
             if (!string.IsNullOrWhiteSpace(boardTitle))
             {
                 AnsiConsole.MarkupLine($"[grey]{Markup.Escape(boardTitle)}[/]");
@@ -390,16 +401,17 @@ public static class InteractiveUi
             }
 
             var table = new Table().Border(TableBorder.Rounded);
+            table.Expand = true;
             table.AddColumn("#");
-            table.AddColumn("ThreadID");
-            table.AddColumn("Title");
-            table.AddColumn("CreatedAt");
+            table.AddColumn(L("ThreadID"));
+            table.AddColumn(L("Title"));
+            table.AddColumn(L("CreatedAt"));
             for (var i = 0; i < threads.Count; i++)
             {
                 var t = threads[i];
                 table.AddRow(
                     (offset + i + 1).ToString(),
-                    Markup.Escape(WrapToken(t.ThreadId, 24)),
+                    Markup.Escape(t.ThreadId),
                     Markup.Escape(t.Thread.Title),
                     Markup.Escape(t.Thread.CreatedAt)
                 );
@@ -425,8 +437,9 @@ public static class InteractiveUi
 
             var action = AnsiConsole.Prompt(
                 new SelectionPrompt<string>()
-                    .Title("Action")
+                    .Title(L("Action"))
                     .AddChoices(actions)
+                    .UseConverter(L)
             );
 
             switch (action)
@@ -435,16 +448,16 @@ public static class InteractiveUi
                 {
                     if (threads.Count == 0)
                     {
-                        AnsiConsole.MarkupLine("[grey]No threads in this page.[/]");
+                        AnsiConsole.MarkupLine($"[grey]{ML("No threads in this page.")}[/]");
                         Pause();
                         break;
                     }
 
                     var thread = AnsiConsole.Prompt(
                         new SelectionPrompt<ThreadItem>()
-                            .Title("Select thread")
+                            .Title(L("Select thread"))
                             .PageSize(12)
-                            .MoreChoicesText("[grey](move up and down to reveal more threads)[/]")
+                            .MoreChoicesText($"[grey]{ML("(move up and down to reveal more threads)")}[/]")
                             .AddChoices(threads)
                             .UseConverter(t => $"{Markup.Escape(t.Thread.Title)}  [grey]{Markup.Escape(Short(t.ThreadId, 24))}[/]")
                     );
@@ -491,17 +504,17 @@ public static class InteractiveUi
             }
 
             AnsiConsole.Clear();
-            AnsiConsole.Write(new Rule("[bold]Thread[/]").LeftJustified());
-            AnsiConsole.MarkupLine($"[grey]Board:[/] {Markup.Escape(tr.ThreadMeta.BoardId)}");
-            AnsiConsole.MarkupLine($"[grey]Title:[/] {Markup.Escape(tr.ThreadMeta.Title)}");
-            AnsiConsole.MarkupLine($"[grey]ThreadID:[/] {Markup.Escape(tr.ThreadMeta.ThreadId)}");
+            AnsiConsole.Write(new Rule($"[bold]{ML("Thread")}[/]").LeftJustified());
+            AnsiConsole.MarkupLine($"[grey]{ML("Board")}:[/] {Markup.Escape(tr.ThreadMeta.BoardId)}");
+            AnsiConsole.MarkupLine($"[grey]{ML("Title")}:[/] {Markup.Escape(tr.ThreadMeta.Title)}");
+            AnsiConsole.MarkupLine($"[grey]{ML("ThreadID")}:[/] {Markup.Escape(tr.ThreadMeta.ThreadId)}");
             AnsiConsole.WriteLine();
 
             var visiblePosts = tr.Posts.Where(p => !blockedKeys.Contains(p.Post.AuthorPubKey)).ToList();
             var hiddenCount = tr.Posts.Count - visiblePosts.Count;
             if (hiddenCount > 0)
             {
-                AnsiConsole.MarkupLine($"[grey]{hiddenCount} post(s) hidden (blocked authors).[/]");
+                AnsiConsole.MarkupLine($"[grey]{Markup.Escape(F("{0} post(s) hidden (blocked authors).", hiddenCount))}[/]");
                 AnsiConsole.WriteLine();
             }
 
@@ -512,17 +525,17 @@ public static class InteractiveUi
                 var meta = $"[bold]#{i + 1}[/] {Markup.Escape(p.Post.DisplayName)} [grey]{Markup.Escape(p.Post.CreatedAt)}[/]";
                 if (!string.IsNullOrWhiteSpace(p.Post.EditedAt))
                 {
-                    meta += $" [grey](edited {Markup.Escape(p.Post.EditedAt)})[/]";
+                    meta += $" [grey]({ML("edited")} {Markup.Escape(p.Post.EditedAt)})[/]";
                 }
 
-                var cidLine = KeyValueMarkup("CID", p.Cid, 48);
-                var authorLine = KeyValueMarkup("Author", p.Post.AuthorPubKey, 48);
+                var cidLine = KeyValueMarkupAuto("CID", p.Cid);
+                var authorLine = KeyValueMarkupAuto("Author", p.Post.AuthorPubKey);
                 var parentLine = string.IsNullOrWhiteSpace(p.Post.ParentPostCid)
                     ? null
-                    : KeyValueMarkup("Parent", p.Post.ParentPostCid, 48);
+                    : KeyValueMarkupAuto("Parent", p.Post.ParentPostCid);
 
                 var body = p.Tombstoned
-                    ? $"[red][tombstoned][/]\n{Markup.Escape(p.TombstoneReason ?? "")}".TrimEnd()
+                    ? $"[red][{ML("tombstoned")}][/]\n{Markup.Escape(p.TombstoneReason ?? "")}".TrimEnd()
                     : Markup.Escape(p.Post.Body.Content);
 
                 var lines = new List<string> { meta, cidLine, authorLine };
@@ -536,6 +549,7 @@ public static class InteractiveUi
                 var panel = new Panel(new Markup(string.Join("\n", lines)))
                     .BorderColor(Color.Grey)
                     .Border(BoxBorder.Rounded);
+                panel.Expand = true;
 
                 AnsiConsole.Write(panel);
             }
@@ -552,7 +566,7 @@ public static class InteractiveUi
                 "Back",
             };
 
-            var action = AnsiConsole.Prompt(new SelectionPrompt<string>().Title("Action").AddChoices(actions));
+            var action = AnsiConsole.Prompt(new SelectionPrompt<string>().Title(L("Action")).AddChoices(actions).UseConverter(L));
             switch (action)
             {
                 case "Reply":
@@ -589,26 +603,26 @@ public static class InteractiveUi
             return;
         }
 
-        var displayName = AnsiConsole.Ask("Display name (optional)", "");
+        var displayName = AnsiConsole.Ask(L("Display name (optional)"), "");
 
         string? parent = null;
-        if (visiblePosts.Count > 0 && AnsiConsole.Confirm("Reply to a specific post?", false))
+        if (visiblePosts.Count > 0 && AnsiConsole.Confirm(L("Reply to a specific post?"), false))
         {
             var selected = AnsiConsole.Prompt(
                 new SelectionPrompt<ThreadPostItem>()
-                    .Title("Select parent post")
+                    .Title(L("Select parent post"))
                     .PageSize(12)
-                    .MoreChoicesText("[grey](move up and down to reveal more posts)[/]")
+                    .MoreChoicesText($"[grey]{ML("(move up and down to reveal more posts)")}[/]")
                     .AddChoices(visiblePosts)
                     .UseConverter(p => $"{Markup.Escape(p.Post.DisplayName)}  [grey]{Markup.Escape(Short(p.Cid, 24))}[/]")
             );
             parent = selected.Cid;
         }
 
-        var body = ReadMultiline("Body");
+        var body = ReadMultiline(L("Body"));
         if (string.IsNullOrWhiteSpace(body))
         {
-            AnsiConsole.MarkupLine("[yellow]Body is empty. Canceled.[/]");
+            AnsiConsole.MarkupLine($"[yellow]{ML("Body is empty. Canceled.")}[/]");
             Pause();
             return;
         }
@@ -642,20 +656,20 @@ public static class InteractiveUi
             return;
         }
 
-        var title = AnsiConsole.Ask<string>("Title");
+        var title = AnsiConsole.Ask<string>(L("Title"));
         if (string.IsNullOrWhiteSpace(title))
         {
-            AnsiConsole.MarkupLine("[yellow]Title is empty. Canceled.[/]");
+            AnsiConsole.MarkupLine($"[yellow]{ML("Title is empty. Canceled.")}[/]");
             Pause();
             return;
         }
 
-        var displayName = AnsiConsole.Ask("Display name (optional)", "");
+        var displayName = AnsiConsole.Ask(L("Display name (optional)"), "");
 
-        var body = ReadMultiline("Body");
+        var body = ReadMultiline(L("Body"));
         if (string.IsNullOrWhiteSpace(body))
         {
-            AnsiConsole.MarkupLine("[yellow]Body is empty. Canceled.[/]");
+            AnsiConsole.MarkupLine($"[yellow]{ML("Body is empty. Canceled.")}[/]");
             Pause();
             return;
         }
@@ -685,7 +699,7 @@ public static class InteractiveUi
     {
         if (visiblePosts.Count == 0)
         {
-            AnsiConsole.MarkupLine("[grey]No posts to edit.[/]");
+            AnsiConsole.MarkupLine($"[grey]{ML("No posts to edit.")}[/]");
             Pause();
             return;
         }
@@ -698,19 +712,19 @@ public static class InteractiveUi
 
         var selected = AnsiConsole.Prompt(
             new SelectionPrompt<ThreadPostItem>()
-                .Title("Select post to edit")
+                .Title(L("Select post to edit"))
                 .PageSize(12)
-                .MoreChoicesText("[grey](move up and down to reveal more posts)[/]")
+                .MoreChoicesText($"[grey]{ML("(move up and down to reveal more posts)")}[/]")
                 .AddChoices(visiblePosts)
                 .UseConverter(p => $"{Markup.Escape(p.Post.DisplayName)}  [grey]{Markup.Escape(Short(p.Cid, 24))}[/]")
         );
 
-        var displayName = EmptyToNull(AnsiConsole.Ask("Display name (optional, blank = keep)", ""));
+        var displayName = EmptyToNull(AnsiConsole.Ask(L("Display name (optional, blank = keep)"), ""));
 
-        var body = ReadMultiline("Body");
+        var body = ReadMultiline(L("Body"));
         if (string.IsNullOrWhiteSpace(body))
         {
-            AnsiConsole.MarkupLine("[yellow]Body is empty. Canceled.[/]");
+            AnsiConsole.MarkupLine($"[yellow]{ML("Body is empty. Canceled.")}[/]");
             Pause();
             return;
         }
@@ -738,7 +752,7 @@ public static class InteractiveUi
     {
         if (visiblePosts.Count == 0)
         {
-            AnsiConsole.MarkupLine("[grey]No posts to tombstone.[/]");
+            AnsiConsole.MarkupLine($"[grey]{ML("No posts to tombstone.")}[/]");
             Pause();
             return;
         }
@@ -751,14 +765,14 @@ public static class InteractiveUi
 
         var selected = AnsiConsole.Prompt(
             new SelectionPrompt<ThreadPostItem>()
-                .Title("Select post to tombstone")
+                .Title(L("Select post to tombstone"))
                 .PageSize(12)
-                .MoreChoicesText("[grey](move up and down to reveal more posts)[/]")
+                .MoreChoicesText($"[grey]{ML("(move up and down to reveal more posts)")}[/]")
                 .AddChoices(visiblePosts)
                 .UseConverter(p => $"{Markup.Escape(p.Post.DisplayName)}  [grey]{Markup.Escape(Short(p.Cid, 24))}[/]")
         );
 
-        var reason = EmptyToNull(AnsiConsole.Ask("Reason (optional)", ""));
+        var reason = EmptyToNull(AnsiConsole.Ask(L("Reason (optional)"), ""));
 
         try
         {
@@ -780,11 +794,11 @@ public static class InteractiveUi
 
     private static async Task SearchPostsAsync(BbsApiClient api, KeyStore keys, BlockedStore blocked, CancellationToken ct)
     {
-        var q = AnsiConsole.Ask<string>("Query (q)");
-        var boardId = EmptyToNull(AnsiConsole.Ask("Board ID (optional)", ""));
-        var author = EmptyToNull(AnsiConsole.Ask("Author pubKey (optional)", ""));
-        var since = EmptyToNull(AnsiConsole.Ask("Since (optional, RFC3339)", ""));
-        var until = EmptyToNull(AnsiConsole.Ask("Until (optional, RFC3339)", ""));
+        var q = AnsiConsole.Ask<string>(L("Query (q)"));
+        var boardId = EmptyToNull(AnsiConsole.Ask(L("Board ID (optional)"), ""));
+        var author = EmptyToNull(AnsiConsole.Ask(L("Author pubKey (optional)"), ""));
+        var since = EmptyToNull(AnsiConsole.Ask(L("Since (optional, RFC3339)"), ""));
+        var until = EmptyToNull(AnsiConsole.Ask(L("Until (optional, RFC3339)"), ""));
 
         var offset = 0;
         while (true)
@@ -802,19 +816,20 @@ public static class InteractiveUi
             }
 
             AnsiConsole.Clear();
-            AnsiConsole.Write(new Rule("[bold]Search posts[/]").LeftJustified());
+            AnsiConsole.Write(new Rule($"[bold]{ML("Search posts")}[/]").LeftJustified());
             AnsiConsole.MarkupLine($"[grey]q:[/] {Markup.Escape(q)}");
             if (boardId != null) AnsiConsole.MarkupLine($"[grey]boardId:[/] {Markup.Escape(boardId)}");
             if (author != null) AnsiConsole.MarkupLine($"[grey]author:[/] {Markup.Escape(Short(author, 24))}");
             AnsiConsole.WriteLine();
 
             var table = new Table().Border(TableBorder.Rounded);
+            table.Expand = true;
             table.AddColumn("#");
-            table.AddColumn("Board");
-            table.AddColumn("Thread");
-            table.AddColumn("Post");
-            table.AddColumn("Name");
-            table.AddColumn("CreatedAt");
+            table.AddColumn(L("Board"));
+            table.AddColumn(L("Thread"));
+            table.AddColumn(L("Post"));
+            table.AddColumn(L("Name"));
+            table.AddColumn(L("CreatedAt"));
             for (var i = 0; i < results.Count; i++)
             {
                 var r = results[i];
@@ -846,23 +861,23 @@ public static class InteractiveUi
             }
             actions.Add("Back");
 
-            var action = AnsiConsole.Prompt(new SelectionPrompt<string>().Title("Action").AddChoices(actions));
+            var action = AnsiConsole.Prompt(new SelectionPrompt<string>().Title(L("Action")).AddChoices(actions).UseConverter(L));
             switch (action)
             {
                 case "Open thread":
                 {
                     if (results.Count == 0)
                     {
-                        AnsiConsole.MarkupLine("[grey]No results in this page.[/]");
+                        AnsiConsole.MarkupLine($"[grey]{ML("No results in this page.")}[/]");
                         Pause();
                         break;
                     }
 
                     var selected = AnsiConsole.Prompt(
                         new SelectionPrompt<SearchPostResult>()
-                            .Title("Select result")
+                            .Title(L("Select result"))
                             .PageSize(12)
-                            .MoreChoicesText("[grey](move up and down to reveal more results)[/]")
+                            .MoreChoicesText($"[grey]{ML("(move up and down to reveal more results)")}[/]")
                             .AddChoices(results)
                             .UseConverter(r =>
                                 $"{Markup.Escape(r.DisplayName)}  [grey]{Markup.Escape(r.BoardId)} {Markup.Escape(Short(r.ThreadId, 16))} {Markup.Escape(Short(r.PostCid, 16))}[/]"
@@ -876,16 +891,16 @@ public static class InteractiveUi
                 {
                     if (results.Count == 0)
                     {
-                        AnsiConsole.MarkupLine("[grey]No results in this page.[/]");
+                        AnsiConsole.MarkupLine($"[grey]{ML("No results in this page.")}[/]");
                         Pause();
                         break;
                     }
 
                     var selected = AnsiConsole.Prompt(
                         new SelectionPrompt<SearchPostResult>()
-                            .Title("Select author to block")
+                            .Title(L("Select author to block"))
                             .PageSize(12)
-                            .MoreChoicesText("[grey](move up and down to reveal more results)[/]")
+                            .MoreChoicesText($"[grey]{ML("(move up and down to reveal more results)")}[/]")
                             .AddChoices(results)
                             .UseConverter(r => $"{Markup.Escape(r.DisplayName)}  [grey]{Markup.Escape(Short(r.AuthorPubKey, 24))}[/]")
                     );
@@ -917,11 +932,12 @@ public static class InteractiveUi
             list = list.OrderBy(k => k.Name, StringComparer.OrdinalIgnoreCase).ToList();
 
             AnsiConsole.Clear();
-            AnsiConsole.Write(new Rule("[bold]Keys[/]").LeftJustified());
+            AnsiConsole.Write(new Rule($"[bold]{ML("Keys")}[/]").LeftJustified());
 
             var table = new Table().Border(TableBorder.Rounded);
-            table.AddColumn("Name");
-            table.AddColumn("Public key");
+            table.Expand = true;
+            table.AddColumn(L("Name"));
+            table.AddColumn(L("Public key"));
             foreach (var k in list)
             {
                 table.AddRow(Markup.Escape(k.Name), Markup.Escape(Short(k.Pub, 48)));
@@ -931,15 +947,16 @@ public static class InteractiveUi
 
             var action = AnsiConsole.Prompt(
                 new SelectionPrompt<string>()
-                    .Title("Action")
+                    .Title(L("Action"))
                     .AddChoices("Generate", "Delete", "Back")
+                    .UseConverter(L)
             );
 
             switch (action)
             {
                 case "Generate":
                 {
-                    var name = AnsiConsole.Ask("Key name", "default");
+                    var name = AnsiConsole.Ask(L("Key name"), "default");
                     try
                     {
                         var created = await keys.GenerateAsync(name, ct);
@@ -956,18 +973,18 @@ public static class InteractiveUi
                 {
                     if (list.Count == 0)
                     {
-                        AnsiConsole.MarkupLine("[grey]No keys to delete.[/]");
+                        AnsiConsole.MarkupLine($"[grey]{ML("No keys to delete.")}[/]");
                         Pause();
                         break;
                     }
                     var selected = AnsiConsole.Prompt(
                         new SelectionPrompt<KeyEntry>()
-                            .Title("Select key to delete")
+                            .Title(L("Select key to delete"))
                             .PageSize(12)
                             .AddChoices(list)
                             .UseConverter(k => $"{Markup.Escape(k.Name)}  [grey]{Markup.Escape(Short(k.Pub, 24))}[/]")
                     );
-                    if (!AnsiConsole.Confirm($"Delete '{selected.Name}'?", false))
+                    if (!AnsiConsole.Confirm(F("Delete '{0}'?", selected.Name), false))
                     {
                         break;
                     }
@@ -997,10 +1014,11 @@ public static class InteractiveUi
             var list = set.Order(StringComparer.Ordinal).ToList();
 
             AnsiConsole.Clear();
-            AnsiConsole.Write(new Rule("[bold]Blocked authors[/]").LeftJustified());
+            AnsiConsole.Write(new Rule($"[bold]{ML("Blocked authors")}[/]").LeftJustified());
 
             var table = new Table().Border(TableBorder.Rounded);
-            table.AddColumn("Public key");
+            table.Expand = true;
+            table.AddColumn(L("Public key"));
             foreach (var k in list)
             {
                 table.AddRow(Markup.Escape(k));
@@ -1010,15 +1028,16 @@ public static class InteractiveUi
 
             var action = AnsiConsole.Prompt(
                 new SelectionPrompt<string>()
-                    .Title("Action")
+                    .Title(L("Action"))
                     .AddChoices("Add", "Remove", "Back")
+                    .UseConverter(L)
             );
 
             switch (action)
             {
                 case "Add":
                 {
-                    var pub = AnsiConsole.Ask<string>("Public key to block");
+                    var pub = AnsiConsole.Ask<string>(L("Public key to block"));
                     if (string.IsNullOrWhiteSpace(pub))
                     {
                         break;
@@ -1032,13 +1051,13 @@ public static class InteractiveUi
                 {
                     if (list.Count == 0)
                     {
-                        AnsiConsole.MarkupLine("[grey]No blocked authors to remove.[/]");
+                        AnsiConsole.MarkupLine($"[grey]{ML("No blocked authors to remove.")}[/]");
                         Pause();
                         break;
                     }
                     var selected = AnsiConsole.Prompt(
                         new SelectionPrompt<string>()
-                            .Title("Select key to remove")
+                            .Title(L("Select key to remove"))
                             .PageSize(12)
                             .AddChoices(list)
                             .UseConverter(Markup.Escape)
@@ -1058,16 +1077,16 @@ public static class InteractiveUi
     {
         if (visiblePosts.Count == 0)
         {
-            AnsiConsole.MarkupLine("[grey]No posts to select.[/]");
+            AnsiConsole.MarkupLine($"[grey]{ML("No posts to select.")}[/]");
             Pause();
             return;
         }
 
         var selected = AnsiConsole.Prompt(
             new SelectionPrompt<ThreadPostItem>()
-                .Title("Select post")
+                .Title(L("Select post"))
                 .PageSize(12)
-                .MoreChoicesText("[grey](move up and down to reveal more posts)[/]")
+                .MoreChoicesText($"[grey]{ML("(move up and down to reveal more posts)")}[/]")
                 .AddChoices(visiblePosts)
                 .UseConverter(p => $"{Markup.Escape(p.Post.DisplayName)}  [grey]{Markup.Escape(Short(p.Post.AuthorPubKey, 24))}[/]")
         );
@@ -1084,12 +1103,12 @@ public static class InteractiveUi
 
         if (list.Count == 0)
         {
-            AnsiConsole.MarkupLine("[yellow]No keys found.[/]");
-            if (!AnsiConsole.Confirm("Generate a key now?", true))
+            AnsiConsole.MarkupLine($"[yellow]{ML("No keys found.")}[/]");
+            if (!AnsiConsole.Confirm(L("Generate a key now?"), true))
             {
                 return null;
             }
-            var name = AnsiConsole.Ask("Key name", "default");
+            var name = AnsiConsole.Ask(L("Key name"), "default");
             try
             {
                 return await keys.GenerateAsync(name, ct);
@@ -1104,9 +1123,9 @@ public static class InteractiveUi
 
         return AnsiConsole.Prompt(
             new SelectionPrompt<KeyEntry>()
-                .Title("Select key")
+                .Title(L("Select key"))
                 .PageSize(12)
-                .MoreChoicesText("[grey](move up and down to reveal more keys)[/]")
+                .MoreChoicesText($"[grey]{ML("(move up and down to reveal more keys)")}[/]")
                 .AddChoices(list)
                 .UseConverter(k => $"{Markup.Escape(k.Name)}  [grey]{Markup.Escape(Short(k.Pub, 32))}[/]")
         );
@@ -1126,25 +1145,27 @@ public static class InteractiveUi
             var healthy = await BackendLauncher.IsHealthyAsync(cfg.BackendBaseUrl, ct);
 
             AnsiConsole.Clear();
-            AnsiConsole.Write(new Rule("[bold]Settings[/]").LeftJustified());
-            AnsiConsole.MarkupLine($"[grey]Config:[/] {Markup.Escape(configStore.ConfigPath)}");
-            AnsiConsole.MarkupLine($"[grey]Backend:[/] {Markup.Escape(cfg.BackendBaseUrl)} [{(healthy ? "green" : "red")}]{(healthy ? "up" : "down")}[/]");
-            AnsiConsole.MarkupLine($"[grey]Backend role (managed):[/] {Markup.Escape(cfg.BackendRole)}");
-            AnsiConsole.MarkupLine($"[grey]Auto-start backend:[/] {cfg.StartBackend}");
-            AnsiConsole.MarkupLine($"[grey]bbs-node path:[/] {Markup.Escape(cfg.BbsNodePath ?? "<auto>")}");
-            AnsiConsole.MarkupLine($"[grey]Data dir:[/] {Markup.Escape(cfg.DataDir)}");
-            AnsiConsole.MarkupLine($"[grey]Flex-IPFS base URL:[/] {Markup.Escape(cfg.FlexIpfsBaseUrl)}");
-            AnsiConsole.MarkupLine($"[grey]Flex-IPFS base dir:[/] {Markup.Escape(cfg.FlexIpfsBaseDir ?? "<auto>")}");
-            AnsiConsole.MarkupLine($"[grey]Flex-IPFS GW endpoint override:[/] {Markup.Escape(cfg.FlexIpfsGwEndpoint ?? "<none>")}");
-            AnsiConsole.MarkupLine($"[grey]Flex-IPFS mDNS:[/] {cfg.FlexIpfsMdns}");
-            AnsiConsole.MarkupLine($"[grey]Flex-IPFS mDNS timeout:[/] {cfg.FlexIpfsMdnsTimeoutSeconds}s");
-            AnsiConsole.MarkupLine($"[grey]Autostart flex-ipfs:[/] {cfg.AutostartFlexIpfs}");
+            AnsiConsole.Write(new Rule($"[bold]{ML("Settings")}[/]").LeftJustified());
+            AnsiConsole.MarkupLine($"[grey]{ML("Config")}:[/] {Markup.Escape(configStore.ConfigPath)}");
+            AnsiConsole.MarkupLine($"[grey]{ML("Backend")}:[/] {Markup.Escape(cfg.BackendBaseUrl)} [{(healthy ? "green" : "red")}]{ML(healthy ? "up" : "down")}[/]");
+            AnsiConsole.MarkupLine($"[grey]{ML("Backend role (managed)")}:[/] {Markup.Escape(cfg.BackendRole)}");
+            AnsiConsole.MarkupLine($"[grey]{ML("UI language")}:[/] {Markup.Escape(L(cfg.UiLanguage))}");
+            AnsiConsole.MarkupLine($"[grey]{ML("Auto-start backend")}:[/] {cfg.StartBackend}");
+            AnsiConsole.MarkupLine($"[grey]{ML("bbs-node path")}:[/] {Markup.Escape(cfg.BbsNodePath ?? L("<auto>"))}");
+            AnsiConsole.MarkupLine($"[grey]{ML("Data dir")}:[/] {Markup.Escape(cfg.DataDir)}");
+            AnsiConsole.MarkupLine($"[grey]{ML("Flex-IPFS base URL")}:[/] {Markup.Escape(cfg.FlexIpfsBaseUrl)}");
+            AnsiConsole.MarkupLine($"[grey]{ML("Flex-IPFS base dir")}:[/] {Markup.Escape(cfg.FlexIpfsBaseDir ?? L("<auto>"))}");
+            AnsiConsole.MarkupLine($"[grey]{ML("Flex-IPFS GW endpoint override")}:[/] {Markup.Escape(cfg.FlexIpfsGwEndpoint ?? L("<none>"))}");
+            AnsiConsole.MarkupLine($"[grey]{ML("Flex-IPFS mDNS")}:[/] {cfg.FlexIpfsMdns}");
+            AnsiConsole.MarkupLine($"[grey]{ML("Flex-IPFS mDNS timeout")}:[/] {cfg.FlexIpfsMdnsTimeoutSeconds}s");
+            AnsiConsole.MarkupLine($"[grey]{ML("Autostart flex-ipfs")}:[/] {cfg.AutostartFlexIpfs}");
             AnsiConsole.WriteLine();
 
             var choice = AnsiConsole.Prompt(
                 new SelectionPrompt<string>()
-                    .Title("Settings menu")
-                    .AddChoices("Client / Backend", "Flexible-IPFS", "kadrtt.properties", "Backend control", "Back")
+                    .Title(L("Settings menu"))
+                    .AddChoices("Client / Backend", "Flexible-IPFS", "Language", "kadrtt.properties", "Backend control", "Back")
+                    .UseConverter(L)
             );
 
             switch (choice)
@@ -1159,6 +1180,23 @@ public static class InteractiveUi
                 {
                     var updated = PromptFlexIpfsSettings(cfg);
                     cfg = await ApplyConfigAsync(configStore, launcher, cfg, updated, ct);
+                    break;
+                }
+                case "Language":
+                {
+                    var langs = new[] { cfg.UiLanguage, "auto", "en", "ja" }
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    var selected = AnsiConsole.Prompt(
+                        new SelectionPrompt<string>()
+                            .Title(L("UI language"))
+                            .AddChoices(langs)
+                            .UseConverter(L)
+                    );
+                    var updated = cfg with { UiLanguage = selected };
+                    cfg = await ApplyConfigAsync(configStore, launcher, cfg, updated, ct);
+                    SetLanguage(cfg.UiLanguage);
                     break;
                 }
                 case "kadrtt.properties":
@@ -1182,21 +1220,21 @@ public static class InteractiveUi
 
     private static ClientConfig PromptClientBackendSettings(ClientConfig cfg)
     {
-        var backend = AnsiConsole.Ask("Backend base URL", cfg.BackendBaseUrl);
+        var backend = AnsiConsole.Ask(L("Backend base URL"), cfg.BackendBaseUrl);
         var roles = new[] { cfg.BackendRole, "client", "indexer", "archiver", "full" }
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
         var backendRole = AnsiConsole.Prompt(
             new SelectionPrompt<string>()
-                .Title("Backend role (managed)")
+                .Title(L("Backend role (managed)"))
                 .AddChoices(roles)
         );
-        var dataDir = AnsiConsole.Ask("Data dir", cfg.DataDir);
-        var startBackend = AnsiConsole.Confirm("Auto-start backend (manage local bbs-node)?", cfg.StartBackend);
+        var dataDir = AnsiConsole.Ask(L("Data dir"), cfg.DataDir);
+        var startBackend = AnsiConsole.Confirm(L("Auto-start backend (manage local bbs-node)?"), cfg.StartBackend);
 
-        var currentPath = cfg.BbsNodePath ?? "<auto>";
+        var currentPath = cfg.BbsNodePath ?? L("<auto>");
         var bbsNodePathInput = AnsiConsole.Prompt(
-            new TextPrompt<string>($"bbs-node path (blank = auto) [grey](current: {EscapePrompt(currentPath)})[/]")
+            new TextPrompt<string>(F("bbs-node path (blank = auto) [grey](current: {0})[/]", EscapePrompt(currentPath)))
                 .AllowEmpty()
         );
         var bbsNodePath = string.IsNullOrWhiteSpace(bbsNodePathInput) ? null : bbsNodePathInput.Trim();
@@ -1213,25 +1251,25 @@ public static class InteractiveUi
 
     private static ClientConfig PromptFlexIpfsSettings(ClientConfig cfg)
     {
-        var flexBaseUrl = AnsiConsole.Ask("Flexible-IPFS HTTP API base URL", cfg.FlexIpfsBaseUrl);
-        var autostartFlexIpfs = AnsiConsole.Confirm("Autostart Flexible-IPFS (when managed by bbs-node)?", cfg.AutostartFlexIpfs);
-        var flexIpfsMdns = AnsiConsole.Confirm("Use mDNS on LAN to discover flex-ipfs gw endpoint?", cfg.FlexIpfsMdns);
+        var flexBaseUrl = AnsiConsole.Ask(L("Flexible-IPFS HTTP API base URL"), cfg.FlexIpfsBaseUrl);
+        var autostartFlexIpfs = AnsiConsole.Confirm(L("Autostart Flexible-IPFS (when managed by bbs-node)?"), cfg.AutostartFlexIpfs);
+        var flexIpfsMdns = AnsiConsole.Confirm(L("Use mDNS on LAN to discover flex-ipfs gw endpoint?"), cfg.FlexIpfsMdns);
         var flexIpfsMdnsTimeoutSeconds = AnsiConsole.Prompt(
-            new TextPrompt<int>("mDNS discovery timeout (seconds)")
+            new TextPrompt<int>(L("mDNS discovery timeout (seconds)"))
                 .DefaultValue(cfg.FlexIpfsMdnsTimeoutSeconds)
-                .Validate(v => v >= 1 ? ValidationResult.Success() : ValidationResult.Error("timeout must be >= 1"))
+                .Validate(v => v >= 1 ? ValidationResult.Success() : ValidationResult.Error(L("timeout must be >= 1")))
         );
 
-        var currentBaseDir = cfg.FlexIpfsBaseDir ?? "<auto>";
+        var currentBaseDir = cfg.FlexIpfsBaseDir ?? L("<auto>");
         var baseDirInput = AnsiConsole.Prompt(
-            new TextPrompt<string>($"flexible-ipfs-base dir (blank = auto) [grey](current: {EscapePrompt(currentBaseDir)})[/]")
+            new TextPrompt<string>(F("flexible-ipfs-base dir (blank = auto) [grey](current: {0})[/]", EscapePrompt(currentBaseDir)))
                 .AllowEmpty()
         );
         var baseDir = string.IsNullOrWhiteSpace(baseDirInput) ? null : baseDirInput.Trim();
 
-        var currentGw = cfg.FlexIpfsGwEndpoint ?? "<none>";
+        var currentGw = cfg.FlexIpfsGwEndpoint ?? L("<none>");
         var gwInput = AnsiConsole.Prompt(
-            new TextPrompt<string>($"ipfs.endpoint override (blank = none) [grey](e.g. /ip4/192.168.0.10/tcp/4001/ipfs/<PeerID>, current: {EscapePrompt(currentGw)})[/]")
+            new TextPrompt<string>(F("ipfs.endpoint override (blank = none) [grey](e.g. /ip4/192.168.0.10/tcp/4001/ipfs/<PeerID>, current: {0})[/]", EscapePrompt(currentGw)))
                 .AllowEmpty()
         );
         var gw = string.IsNullOrWhiteSpace(gwInput) ? null : gwInput.Trim();
@@ -1260,19 +1298,19 @@ public static class InteractiveUi
 
         if (!TryValidateHttpUrl(newCfg.BackendBaseUrl, out var backendErr))
         {
-            AnsiConsole.MarkupLine($"[red]Invalid backend URL:[/] {Markup.Escape(backendErr)}");
+            AnsiConsole.MarkupLine($"[red]{ML("Invalid backend URL")}:[/] {Markup.Escape(backendErr)}");
             Pause();
             return oldCfg;
         }
         if (!TryValidateHttpUrl(newCfg.FlexIpfsBaseUrl, out var flexErr))
         {
-            AnsiConsole.MarkupLine($"[red]Invalid Flexible-IPFS base URL:[/] {Markup.Escape(flexErr)}");
+            AnsiConsole.MarkupLine($"[red]{ML("Invalid Flexible-IPFS base URL")}:[/] {Markup.Escape(flexErr)}");
             Pause();
             return oldCfg;
         }
         if (string.IsNullOrWhiteSpace(newCfg.DataDir))
         {
-            AnsiConsole.MarkupLine("[red]Data dir is required.[/]");
+            AnsiConsole.MarkupLine($"[red]{ML("Data dir is required.")}[/]");
             Pause();
             return oldCfg;
         }
@@ -1285,7 +1323,7 @@ public static class InteractiveUi
         try
         {
             await configStore.SaveAsync(newCfg, ct);
-            AnsiConsole.MarkupLine("[green]ok[/] saved");
+            AnsiConsole.MarkupLine($"[green]ok[/] {ML("saved")}");
         }
         catch (Exception ex)
         {
@@ -1322,11 +1360,11 @@ public static class InteractiveUi
                 var bbsNodePath = newCfg.BbsNodePath ?? BbsNodePathResolver.Resolve();
                 await AnsiConsole.Status()
                     .Spinner(Spinner.Known.Dots)
-                    .StartAsync("Starting backend...", async _ =>
+                    .StartAsync(L("Starting backend..."), async _ =>
                     {
                         await launcher.EnsureRunningAsync(newCfg.BackendBaseUrl, newCfg.StartBackend, bbsNodePath, BbsNodeArgsBuilder.Build(newCfg), ct);
                     });
-                AnsiConsole.MarkupLine("[green]ok[/] started");
+                AnsiConsole.MarkupLine($"[green]ok[/] {ML("started")}");
             }
             catch (Exception ex)
             {
@@ -1346,11 +1384,11 @@ public static class InteractiveUi
             var managed = launcher.IsManagingProcess;
 
             AnsiConsole.Clear();
-            AnsiConsole.Write(new Rule("[bold]Backend control[/]").LeftJustified());
-            AnsiConsole.MarkupLine($"[grey]Backend:[/] {Markup.Escape(cfg.BackendBaseUrl)} [{(healthy ? "green" : "red")}]{(healthy ? "up" : "down")}[/]");
-            AnsiConsole.MarkupLine($"[grey]Managed by this client:[/] {managed} {(launcher.ManagedPid is int pid ? $"(pid={pid})" : "")}".TrimEnd());
-            AnsiConsole.MarkupLine($"[grey]Backend role (managed):[/] {Markup.Escape(cfg.BackendRole)}");
-            AnsiConsole.MarkupLine($"[grey]Auto-start backend:[/] {cfg.StartBackend}");
+            AnsiConsole.Write(new Rule($"[bold]{ML("Backend control")}[/]").LeftJustified());
+            AnsiConsole.MarkupLine($"[grey]{ML("Backend")}:[/] {Markup.Escape(cfg.BackendBaseUrl)} [{(healthy ? "green" : "red")}]{ML(healthy ? "up" : "down")}[/]");
+            AnsiConsole.MarkupLine($"[grey]{ML("Managed by this client")}:[/] {managed} {(launcher.ManagedPid is int pid ? $"(pid={pid})" : "")}".TrimEnd());
+            AnsiConsole.MarkupLine($"[grey]{ML("Backend role (managed)")}:[/] {Markup.Escape(cfg.BackendRole)}");
+            AnsiConsole.MarkupLine($"[grey]{ML("Auto-start backend")}:[/] {cfg.StartBackend}");
             AnsiConsole.WriteLine();
 
             var actions = new List<string>();
@@ -1365,7 +1403,7 @@ public static class InteractiveUi
             }
             actions.Add("Back");
 
-            var action = AnsiConsole.Prompt(new SelectionPrompt<string>().Title("Action").AddChoices(actions));
+            var action = AnsiConsole.Prompt(new SelectionPrompt<string>().Title(L("Action")).AddChoices(actions).UseConverter(L));
             switch (action)
             {
                 case "Start":
@@ -1374,7 +1412,7 @@ public static class InteractiveUi
                         var bbsNodePath = cfg.BbsNodePath ?? BbsNodePathResolver.Resolve();
                         await AnsiConsole.Status()
                             .Spinner(Spinner.Known.Dots)
-                            .StartAsync("Starting backend...", async _ =>
+                            .StartAsync(L("Starting backend..."), async _ =>
                             {
                                 await launcher.EnsureRunningAsync(cfg.BackendBaseUrl, cfg.StartBackend, bbsNodePath, BbsNodeArgsBuilder.Build(cfg), ct);
                             });
@@ -1407,7 +1445,7 @@ public static class InteractiveUi
 
         if (!cfg.StartBackend)
         {
-            AnsiConsole.MarkupLine("[yellow]Auto-start is disabled; restart skipped.[/]");
+            AnsiConsole.MarkupLine($"[yellow]{ML("Auto-start is disabled; restart skipped.")}[/]");
             return;
         }
 
@@ -1418,13 +1456,13 @@ public static class InteractiveUi
         {
             var restarted = await AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
-                .StartAsync("Restarting backend...", async _ =>
+                .StartAsync(L("Restarting backend..."), async _ =>
                 {
                     return await launcher.RestartManagedAsync(cfg.BackendBaseUrl, cfg.StartBackend, bbsNodePath, bbsNodeArgs, ct);
                 });
             if (restarted)
             {
-                AnsiConsole.MarkupLine("[green]ok[/] restarted");
+                AnsiConsole.MarkupLine($"[green]ok[/] {ML("restarted")}");
                 return;
             }
 
@@ -1432,15 +1470,15 @@ public static class InteractiveUi
             {
                 await AnsiConsole.Status()
                     .Spinner(Spinner.Known.Dots)
-                    .StartAsync("Starting backend...", async _ =>
+                    .StartAsync(L("Starting backend..."), async _ =>
                     {
                         await launcher.EnsureRunningAsync(cfg.BackendBaseUrl, cfg.StartBackend, bbsNodePath, bbsNodeArgs, ct);
                     });
-                AnsiConsole.MarkupLine("[green]ok[/] started");
+                AnsiConsole.MarkupLine($"[green]ok[/] {ML("started")}");
                 return;
             }
 
-            AnsiConsole.MarkupLine("[yellow]Backend is running but not managed by this client; please restart it manually to apply settings.[/]");
+            AnsiConsole.MarkupLine($"[yellow]{ML("Backend is running but not managed by this client; please restart it manually to apply settings.")}[/]");
         }
         catch (Exception ex)
         {
@@ -1455,7 +1493,7 @@ public static class InteractiveUi
         var baseDir = ResolveFlexIpfsBaseDir(cfg);
         if (string.IsNullOrWhiteSpace(baseDir))
         {
-            AnsiConsole.MarkupLine("[red]flexible-ipfs-base dir not found. Set it in Flexible-IPFS settings.[/]");
+            AnsiConsole.MarkupLine($"[red]{ML("flexible-ipfs-base dir not found. Set it in Flexible-IPFS settings.")}[/]");
             Pause();
             return false;
         }
@@ -1463,7 +1501,7 @@ public static class InteractiveUi
         var propsPath = Path.Combine(baseDir, "kadrtt.properties");
         if (!File.Exists(propsPath))
         {
-            AnsiConsole.MarkupLine($"[red]kadrtt.properties not found:[/] {Markup.Escape(propsPath)}");
+            AnsiConsole.MarkupLine($"[red]{ML("kadrtt.properties not found")}:[/] {Markup.Escape(propsPath)}");
             Pause();
             return false;
         }
@@ -1491,13 +1529,14 @@ public static class InteractiveUi
             AnsiConsole.MarkupLine($"[grey]{Markup.Escape(propsPath)}[/]");
             if (!string.IsNullOrWhiteSpace(cfg.FlexIpfsGwEndpoint))
             {
-                AnsiConsole.MarkupLine("[yellow]Note:[/] ipfs.endpoint override is set; it will be applied on autostart/restart.");
+                AnsiConsole.MarkupLine($"[yellow]{ML("Note")}:[/] {ML("ipfs.endpoint override is set; it will be applied on autostart/restart.")}");
             }
             AnsiConsole.WriteLine();
 
             var table = new Table().Border(TableBorder.Rounded);
-            table.AddColumn("Key");
-            table.AddColumn("Value");
+            table.Expand = true;
+            table.AddColumn(L("Key"));
+            table.AddColumn(L("Value"));
             foreach (var kv in entries.OrderBy(e => e.Key, StringComparer.OrdinalIgnoreCase))
             {
                 table.AddRow(Markup.Escape(kv.Key), Markup.Escape(Short(kv.Value, 60)));
@@ -1507,8 +1546,9 @@ public static class InteractiveUi
 
             var action = AnsiConsole.Prompt(
                 new SelectionPrompt<string>()
-                    .Title("Action")
+                    .Title(L("Action"))
                     .AddChoices("Edit", "Add", "Remove", "Back")
+                    .UseConverter(L)
             );
 
             switch (action)
@@ -1517,40 +1557,42 @@ public static class InteractiveUi
                 {
                     if (entries.Count == 0)
                     {
-                        AnsiConsole.MarkupLine("[grey]No properties found.[/]");
+                        AnsiConsole.MarkupLine($"[grey]{ML("No properties found.")}[/]");
                         Pause();
                         break;
                     }
                     var key = AnsiConsole.Prompt(
                         new SelectionPrompt<string>()
-                            .Title("Select key")
+                            .Title(L("Select key"))
                             .PageSize(12)
-                            .MoreChoicesText("[grey](move up and down to reveal more)[/]")
+                            .MoreChoicesText($"[grey]{ML("(move up and down to reveal more)")}[/]")
                             .AddChoices(entries.Keys.Order(StringComparer.OrdinalIgnoreCase))
                             .UseConverter(Markup.Escape)
                     );
                     var current = entries.GetValueOrDefault(key, "");
                     AnsiConsole.Clear();
-                    AnsiConsole.Write(new Rule("[bold]Edit property[/]").LeftJustified());
-                    AnsiConsole.MarkupLine($"[grey]Key:[/] {Markup.Escape(key)}");
-                    AnsiConsole.MarkupLine("[grey]Current value:[/]");
+                    AnsiConsole.Write(new Rule($"[bold]{ML("Edit property")}[/]").LeftJustified());
+                    AnsiConsole.MarkupLine($"[grey]{ML("Key")}:[/] {Markup.Escape(key)}");
+                    AnsiConsole.MarkupLine($"[grey]{ML("Current value")}:[/]");
                     if (string.IsNullOrEmpty(current))
                     {
-                        AnsiConsole.MarkupLine("[grey]<empty>[/]");
+                        AnsiConsole.MarkupLine($"[grey]{ML("<empty>")}[/]");
                     }
                     else
                     {
-                        var currentPanel = new Panel(new Markup(Markup.Escape(WrapToken(current, 72))))
+                        var chunkSize = Math.Clamp(AnsiConsole.Profile.Width - 8, 24, 200);
+                        var currentPanel = new Panel(new Markup(Markup.Escape(WrapToken(current, chunkSize))))
                             .BorderColor(Color.Grey)
                             .Border(BoxBorder.Rounded);
+                        currentPanel.Expand = true;
                         AnsiConsole.Write(currentPanel);
                     }
                     AnsiConsole.WriteLine();
 
-                    var value = AnsiConsole.Prompt(new TextPrompt<string>("New value (single line, blank = empty)").AllowEmpty());
+                    var value = AnsiConsole.Prompt(new TextPrompt<string>(L("New value (single line, blank = empty)")).AllowEmpty());
                     if (value.Contains('\n') || value.Contains('\r'))
                     {
-                        AnsiConsole.MarkupLine("[red]Value must be a single line.[/]");
+                        AnsiConsole.MarkupLine($"[red]{ML("Value must be a single line.")}[/]");
                         Pause();
                         break;
                     }
@@ -1565,18 +1607,18 @@ public static class InteractiveUi
                 }
                 case "Add":
                 {
-                    var key = AnsiConsole.Ask<string>("Key");
+                    var key = AnsiConsole.Ask<string>(L("Key"));
                     key = key.Trim();
                     if (string.IsNullOrWhiteSpace(key) || key.Contains('=') || key.Contains(':') || key.Contains('\n') || key.Contains('\r'))
                     {
-                        AnsiConsole.MarkupLine("[red]Invalid key.[/]");
+                        AnsiConsole.MarkupLine($"[red]{ML("Invalid key.")}[/]");
                         Pause();
                         break;
                     }
-                    var value = AnsiConsole.Prompt(new TextPrompt<string>("Value").AllowEmpty());
+                    var value = AnsiConsole.Prompt(new TextPrompt<string>(L("Value")).AllowEmpty());
                     if (value.Contains('\n') || value.Contains('\r'))
                     {
-                        AnsiConsole.MarkupLine("[red]Value must be a single line.[/]");
+                        AnsiConsole.MarkupLine($"[red]{ML("Value must be a single line.")}[/]");
                         Pause();
                         break;
                     }
@@ -1593,19 +1635,19 @@ public static class InteractiveUi
                 {
                     if (entries.Count == 0)
                     {
-                        AnsiConsole.MarkupLine("[grey]No properties to remove.[/]");
+                        AnsiConsole.MarkupLine($"[grey]{ML("No properties to remove.")}[/]");
                         Pause();
                         break;
                     }
                     var key = AnsiConsole.Prompt(
                         new SelectionPrompt<string>()
-                            .Title("Select key to remove")
+                            .Title(L("Select key to remove"))
                             .PageSize(12)
-                            .MoreChoicesText("[grey](move up and down to reveal more)[/]")
+                            .MoreChoicesText($"[grey]{ML("(move up and down to reveal more)")}[/]")
                             .AddChoices(entries.Keys.Order(StringComparer.OrdinalIgnoreCase))
                             .UseConverter(Markup.Escape)
                     );
-                    if (!AnsiConsole.Confirm($"Remove '{key}'?", false))
+                    if (!AnsiConsole.Confirm(F("Remove '{0}'?", key), false))
                     {
                         break;
                     }
@@ -1795,12 +1837,12 @@ public static class InteractiveUi
         error = "";
         if (!Uri.TryCreate(url, UriKind.Absolute, out var u))
         {
-            error = "not a valid absolute URL";
+            error = L("not a valid absolute URL");
             return false;
         }
         if (u.Scheme is not ("http" or "https"))
         {
-            error = "scheme must be http or https";
+            error = L("scheme must be http or https");
             return false;
         }
         return true;
@@ -1813,7 +1855,7 @@ public static class InteractiveUi
 
     private static string ReadMultiline(string label)
     {
-        AnsiConsole.MarkupLine($"[grey]{Markup.Escape(label)}[/] (finish with a single '.' line):");
+        AnsiConsole.MarkupLine($"[grey]{Markup.Escape(label)}[/] {Markup.Escape(L("(finish with a single '.' line):"))}");
         var lines = new List<string>();
         while (true)
         {
@@ -1859,6 +1901,26 @@ public static class InteractiveUi
         return sb.ToString();
     }
 
+    private static string KeyValueMarkupAuto(string key, string value)
+    {
+        return KeyValueMarkup(key, value, GetAdaptiveKeyValueChunkSize(key));
+    }
+
+    private static int GetAdaptiveKeyValueChunkSize(string key)
+    {
+        key = key.Trim();
+
+        var width = AnsiConsole.Profile.Width;
+        if (width <= 0)
+        {
+            return 48;
+        }
+
+        // Rough budget: panel borders/padding + a little breathing room.
+        var reserved = key.Length + 2 + 12;
+        return Math.Clamp(width - reserved, 24, 200);
+    }
+
     private static string KeyValueMarkup(string key, string value, int chunkSize)
     {
         key = key.Trim();
@@ -1891,13 +1953,13 @@ public static class InteractiveUi
 
     private static void ShowError(Exception ex)
     {
-        AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+        AnsiConsole.MarkupLine($"[red]{ML("Error")}:[/] {Markup.Escape(ex.Message)}");
         AppLog.Error(ex.Message, ex);
     }
 
     private static void Pause()
     {
-        AnsiConsole.MarkupLine("[grey]Press Enter to continue...[/]");
+        AnsiConsole.MarkupLine($"[grey]{ML("Press Enter to continue...")}[/]");
         Console.ReadLine();
     }
 

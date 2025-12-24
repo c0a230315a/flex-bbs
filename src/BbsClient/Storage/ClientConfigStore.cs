@@ -52,6 +52,7 @@ public sealed record ClientConfig
 
     public string BackendBaseUrl { get; init; } = "http://127.0.0.1:8080";
     public string BackendRole { get; init; } = "indexer";
+    public string UiLanguage { get; init; } = "auto";
     public string DataDir { get; init; } = ConfigPaths.DefaultAppDir();
     public bool StartBackend { get; init; } = true;
     public string? BbsNodePath { get; init; }
@@ -67,6 +68,7 @@ public sealed record ClientConfig
     {
         var backendBaseUrl = string.IsNullOrWhiteSpace(BackendBaseUrl) ? "http://127.0.0.1:8080" : BackendBaseUrl.Trim();
         var backendRole = NormalizeRole(BackendRole);
+        var uiLanguage = NormalizeUiLanguage(UiLanguage);
         var dataDir = string.IsNullOrWhiteSpace(DataDir) ? ConfigPaths.DefaultAppDir() : DataDir.Trim();
         var bbsNodePath = string.IsNullOrWhiteSpace(BbsNodePath) ? null : BbsNodePath.Trim();
 
@@ -79,6 +81,7 @@ public sealed record ClientConfig
         {
             BackendBaseUrl = backendBaseUrl,
             BackendRole = backendRole,
+            UiLanguage = uiLanguage,
             DataDir = dataDir,
             BbsNodePath = bbsNodePath,
             FlexIpfsBaseUrl = flexIpfsBaseUrl,
@@ -98,6 +101,19 @@ public sealed record ClientConfig
             "archiver" => role,
             "full" => role,
             _ => "indexer",
+        };
+    }
+
+    private static string NormalizeUiLanguage(string language)
+    {
+        language = string.IsNullOrWhiteSpace(language) ? "auto" : language.Trim().ToLowerInvariant();
+        return language switch
+        {
+            "auto" => language,
+            "en" => language,
+            "ja" => language,
+            "jp" => "ja",
+            _ => "auto",
         };
     }
 }

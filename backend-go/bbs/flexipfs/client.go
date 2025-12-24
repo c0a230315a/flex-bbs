@@ -120,6 +120,16 @@ func (c *Client) PutValueWithAttr(ctx context.Context, value string, attrs, tags
 		q.Set("tags", strings.Join(tags, ","))
 	}
 
+	// Some Flexible-IPFS builds are unstable when `attrs` is set: they may respond with a 400
+	// (Unknown Multihash type...) or even close the connection (EOF). Prepare a tags-only fallback.
+	qNoAttrs := url.Values{}
+	qNoAttrs.Set("value", value)
+	if len(tags) > 0 {
+		qNoAttrs.Set("tags", strings.Join(tags, ","))
+	}
+	useAttrs := len(attrs) > 0
+	var lastPutErr error
+
 	retryUntil := time.Now().Add(30 * time.Second)
 	if dl, ok := ctx.Deadline(); ok && dl.Before(retryUntil) {
 		retryUntil = dl
@@ -127,8 +137,21 @@ func (c *Client) PutValueWithAttr(ctx context.Context, value string, attrs, tags
 
 	var lastErr error
 	for attempt := 0; ; attempt++ {
-		body, status, header, trailer, err := c.postQuery(ctx, "/dht/putvaluewithattr", q)
+		qAttempt := qNoAttrs
+		if useAttrs {
+			qAttempt = q
+		}
+
+		body, status, header, trailer, err := c.postQuery(ctx, "/dht/putvaluewithattr", qAttempt)
 		if err != nil {
+			if useAttrs {
+				useAttrs = false
+				lastPutErr = err
+				continue
+			}
+			if lastPutErr != nil {
+				return "", fmt.Errorf("%v (fallback without attrs also failed: %w)", lastPutErr, err)
+			}
 			return "", err
 		}
 		if status >= 200 && status < 300 {
@@ -137,23 +160,12 @@ func (c *Client) PutValueWithAttr(ctx context.Context, value string, attrs, tags
 
 		httpErr := httpError(status, body, header, trailer)
 
-		// Some Flexible-IPFS builds fail any put that includes attrs due to a manager lookup bug
-		// ("Unknown Multihash type: 0xffffffff"). Fall back to tags-only so core flows (like
-		// CI 2-node integration) can still function without attribute indexing.
-		if status == http.StatusBadRequest && len(attrs) > 0 && strings.Contains(strings.ToLower(httpErr.Error()), "unknown multihash type") {
-			qNoAttrs := url.Values{}
-			qNoAttrs.Set("value", value)
-			if len(tags) > 0 {
-				qNoAttrs.Set("tags", strings.Join(tags, ","))
-			}
-			b2, st2, h2, t2, err := c.postQuery(ctx, "/dht/putvaluewithattr", qNoAttrs)
-			if err != nil {
-				return "", err
-			}
-			if st2 >= 200 && st2 < 300 {
-				return extractCID(b2)
-			}
-			return "", httpError(st2, b2, h2, t2)
+		// Some Flexible-IPFS builds fail any put that includes attrs due to a manager lookup bug.
+		// Fall back to tags-only so core flows can still function without attribute indexing.
+		if status == http.StatusBadRequest && useAttrs && strings.Contains(strings.ToLower(httpErr.Error()), "unknown multihash type") {
+			useAttrs = false
+			lastErr = httpErr
+			continue
 		}
 
 		if status == http.StatusBadRequest && len(bytes.TrimSpace(body)) == 0 {
