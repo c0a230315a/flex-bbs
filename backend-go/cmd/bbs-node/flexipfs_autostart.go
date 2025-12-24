@@ -35,6 +35,21 @@ func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride, gwEndpoin
 	// don't start a second instance (avoids port conflicts).
 	if isFlexIPFSUp(ctx, baseURL) {
 		log.Printf("flex-ipfs already running at %s", baseURL)
+		// Best-effort: keep config files in sync even when flex-ipfs is already running.
+		// (Changes only take effect on next restart, but this avoids getting stuck with a stale Bootstrap list.)
+		if flexBaseDir, _, err := resolveFlexDirs(baseDirOverride); err == nil && flexBaseDir != "" {
+			if strings.TrimSpace(gwEndpointOverride) != "" {
+				if err := maybeOverrideKadrttGWEndpoint(flexBaseDir, gwEndpointOverride); err != nil {
+					return nil, err
+				}
+			}
+			if err := ensureKadrttGlobalIP(flexBaseDir, gwEndpointOverride); err != nil {
+				log.Printf("flex-ipfs ensure ipfs.globalip failed: %v", err)
+			}
+			if err := syncFlexIPFSBootstrapConfig(flexBaseDir, gwEndpointOverride); err != nil {
+				log.Printf("flex-ipfs bootstrap config sync failed: %v", err)
+			}
+		}
 		// Best-effort: if we have a gw endpoint configured (or present in kadrtt.properties),
 		// proactively connect so peerlist isn't empty for subsequent operations (e.g. Create Board).
 		if endpoint := resolveFlexIPFSConnectEndpoint(baseDirOverride, gwEndpointOverride); endpoint != "" {
@@ -181,7 +196,10 @@ func startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride, logDir string) (*fl
 	if err := maybeOverrideKadrttGWEndpoint(flexBaseDir, gwEndpointOverride); err != nil {
 		return nil, err
 	}
-	if err := ensureKadrttGlobalIP(flexBaseDir); err != nil {
+	if err := ensureKadrttGlobalIP(flexBaseDir, gwEndpointOverride); err != nil {
+		return nil, err
+	}
+	if err := syncFlexIPFSBootstrapConfig(flexBaseDir, gwEndpointOverride); err != nil {
 		return nil, err
 	}
 
@@ -318,11 +336,6 @@ func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
 		return fmt.Errorf("FLEXIPFS_GW_ENDPOINT must be a single line")
 	}
 
-	// Kad.getGlobalIP() tries to fetch from checkip.amazonaws.com and only falls back to ipfs.globalip on failure.
-	// In containerized CI (2-node docker), the "global" IP is not routable between containers, so we also set
-	// ipfs.globalip to the endpoint's /ip4/ address when possible (the docker-internal IP).
-	globalIP := extractIP4FromMultiaddr(endpoint)
-
 	propsPath := filepath.Join(flexBaseDir, "kadrtt.properties")
 	b, err := os.ReadFile(propsPath)
 	if err != nil {
@@ -336,14 +349,12 @@ func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
 	}
 
 	reEndpoint := regexp.MustCompile(`^(\s*)ipfs\.endpoint(\s*[:=]).*$`)
-	reGlobalIP := regexp.MustCompile(`^(\s*)ipfs\.globalip(\s*[:=]).*$`)
 	parts := strings.SplitAfter(original, lineSep)
 
 	var out strings.Builder
-	out.Grow(len(original) + len(endpoint) + len(globalIP) + 64)
+	out.Grow(len(original) + len(endpoint) + 64)
 
 	replacedEndpoint := false
-	replacedGlobalIP := false
 	for _, part := range parts {
 		if part == "" {
 			continue
@@ -371,17 +382,6 @@ func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
 			replacedEndpoint = true
 			continue
 		}
-		if globalIP != "" {
-			if m := reGlobalIP.FindStringSubmatch(line); m != nil {
-				out.WriteString(m[1])
-				out.WriteString("ipfs.globalip")
-				out.WriteString(m[2])
-				out.WriteString(globalIP)
-				out.WriteString(suffix)
-				replacedGlobalIP = true
-				continue
-			}
-		}
 
 		out.WriteString(line)
 		out.WriteString(suffix)
@@ -395,14 +395,6 @@ func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
 		out.WriteString(endpoint)
 		out.WriteString(lineSep)
 	}
-	if globalIP != "" && !replacedGlobalIP {
-		if !strings.HasSuffix(out.String(), lineSep) && out.Len() > 0 {
-			out.WriteString(lineSep)
-		}
-		out.WriteString("ipfs.globalip=")
-		out.WriteString(globalIP)
-		out.WriteString(lineSep)
-	}
 
 	st, statErr := os.Stat(propsPath)
 	mode := os.FileMode(0o644)
@@ -412,15 +404,11 @@ func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
 	if err := os.WriteFile(propsPath, []byte(out.String()), mode); err != nil {
 		return err
 	}
-	if globalIP != "" {
-		log.Printf("flex-ipfs: set ipfs.endpoint=%s ipfs.globalip=%s (%s)", endpoint, globalIP, propsPath)
-	} else {
-		log.Printf("flex-ipfs: set ipfs.endpoint=%s (%s)", endpoint, propsPath)
-	}
+	log.Printf("flex-ipfs: set ipfs.endpoint=%s (%s)", endpoint, propsPath)
 	return nil
 }
 
-func ensureKadrttGlobalIP(flexBaseDir string) error {
+func ensureKadrttGlobalIP(flexBaseDir, gwEndpointOverride string) error {
 	propsPath := filepath.Join(flexBaseDir, "kadrtt.properties")
 	b, err := os.ReadFile(propsPath)
 	if err != nil {
@@ -442,14 +430,24 @@ func ensureKadrttGlobalIP(flexBaseDir string) error {
 			break
 		}
 	}
-	if v := strings.TrimSpace(existing); v != "" && v != "null" {
-		return nil
-	}
+	existing = strings.TrimSpace(existing)
 
 	ip := detectLocalIP4()
 	if ip == "" {
 		// Best-effort only; leave as-is.
 		return nil
+	}
+	if existing != "" && existing != "null" {
+		if existing == ip {
+			return nil
+		}
+		// If a client previously ran with mDNS discovery enabled, older builds could incorrectly
+		// write the remote gw endpoint IP into ipfs.globalip. Repair that case automatically.
+		if remoteIP := extractIP4FromMultiaddr(gwEndpointOverride); remoteIP != "" && existing == remoteIP {
+			// proceed to rewrite to local ip below
+		} else {
+			return nil
+		}
 	}
 
 	lineSep := "\n"
@@ -514,6 +512,81 @@ func ensureKadrttGlobalIP(flexBaseDir string) error {
 		return err
 	}
 	log.Printf("flex-ipfs: set ipfs.globalip=%s (%s)", ip, propsPath)
+	return nil
+}
+
+func syncFlexIPFSBootstrapConfig(flexBaseDir, gwEndpointOverride string) error {
+	desired := strings.TrimSpace(resolveFlexIPFSConnectEndpoint(flexBaseDir, gwEndpointOverride))
+	if desired == "" {
+		return nil
+	}
+
+	configPath := filepath.Join(flexBaseDir, ".ipfs", "config")
+	b, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// No config yet; APIServer will create it using Kad.GW_ENDPOINT (from kadrtt.properties).
+			return nil
+		}
+		return err
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return fmt.Errorf("parse %s: %w", configPath, err)
+	}
+
+	var bootstrap []string
+	if raw, ok := cfg["Bootstrap"]; ok {
+		if arr, ok := raw.([]any); ok {
+			for _, v := range arr {
+				s, ok := v.(string)
+				if !ok {
+					continue
+				}
+				s = strings.TrimSpace(s)
+				if s == "" {
+					continue
+				}
+				bootstrap = append(bootstrap, s)
+			}
+		}
+	}
+
+	for _, s := range bootstrap {
+		if s == desired {
+			return nil
+		}
+	}
+
+	var updated []string
+	switch len(bootstrap) {
+	case 0:
+		updated = []string{desired}
+	case 1:
+		// The most common case: a stale single bootstrap from the bundled kadrtt.properties.
+		updated = []string{desired}
+	default:
+		updated = append([]string{desired}, bootstrap...)
+	}
+
+	cfg["Bootstrap"] = updated
+	out, err := json.MarshalIndent(cfg, "", "\t")
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", configPath, err)
+	}
+	out = append(out, '\n')
+
+	st, statErr := os.Stat(configPath)
+	mode := os.FileMode(0o644)
+	if statErr == nil {
+		mode = st.Mode().Perm()
+	}
+	if err := os.WriteFile(configPath, out, mode); err != nil {
+		return err
+	}
+
+	log.Printf("flex-ipfs: updated .ipfs/config bootstrap (added %s)", desired)
 	return nil
 }
 

@@ -111,6 +111,12 @@ Flexible‑IPFS needs at least 1 peer connection (see `dht/peerlist`). On a LAN,
 5. Verify peers:
    - `curl -X POST http://127.0.0.1:5001/api/v0/dht/peerlist` should be non-empty (not `""`)
 
+**Troubleshooting (`peerlist` stays `""`)**
+
+- If port 4001 is reachable but `peerlist` is still empty, check `flexible-ipfs-base/.ipfs/config` → `"Bootstrap"`.
+  - On first run, `.ipfs/config` can be generated from the bundled default `kadrtt.properties` endpoint (e.g. `/ip4/10.202...`). Changing `ipfs.endpoint override` later may not update `"Bootstrap"` automatically.
+  - Fix: update `"Bootstrap"` to your gw endpoint (`/ip4/<A_LAN_IP>/tcp/4001/ipfs/<PeerID>`) or delete `flexible-ipfs-base/.ipfs/config` and restart.
+
 ## Windows 2-PC TUI guide (mDNS, FULL/CLIENT, create board)
 
 Flexible‑IPFS needs at least 1 peer connection. If `dht/peerlist` returns `""`, flows like `Create board` will fail.

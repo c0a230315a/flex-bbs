@@ -161,6 +161,12 @@ curl.exe -X POST http://127.0.0.1:5001/api/v0/dht/peerlist
 
 `""` 以外になれば OK です。
 
+#### Troubleshooting（`peerlist` がずっと `""` のまま）
+
+- `Test-NetConnection <AのIP> -Port 4001` が通るのに `peerlist` が空の場合、`flexible-ipfs-base/.ipfs/config` の `"Bootstrap"` が **古いまま**の可能性があります。
+  - 初回起動時に `kadrtt.properties` のデフォルト値（例: `/ip4/10.202...`）で `.ipfs/config` が生成され、その後 `ipfs.endpoint override` を変えても `"Bootstrap"` が自動更新されないケースがあります。
+  - 対処: `"Bootstrap"` に A の endpoint（`/ip4/<AのLAN IP>/tcp/4001/ipfs/<PeerID>`）を入れる（または `flexible-ipfs-base/.ipfs/config` を削除して再起動）→ `bbs-client`/`bbs-node` を再起動。
+
 #### 4) ボード作成 → 共有（Add board）
 
 1. PC-B: `Browse boards` → `Create board`
