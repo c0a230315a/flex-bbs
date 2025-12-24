@@ -2,6 +2,7 @@ using BbsClient.Api;
 using BbsClient.Storage;
 using BbsClient.Util;
 using System.Diagnostics;
+using System.Text;
 using Spectre.Console;
 
 namespace BbsClient.Ui;
@@ -146,7 +147,7 @@ public static class InteractiveUi
                 table.AddRow(
                     Markup.Escape(b.Board.BoardId),
                     Markup.Escape(b.Board.Title),
-                    Markup.Escape(Short(b.BoardMetaCid, 24))
+                    Markup.Escape(WrapToken(b.BoardMetaCid, 24))
                 );
             }
             AnsiConsole.Write(table);
@@ -398,7 +399,7 @@ public static class InteractiveUi
                 var t = threads[i];
                 table.AddRow(
                     (offset + i + 1).ToString(),
-                    Markup.Escape(Short(t.ThreadId, 24)),
+                    Markup.Escape(WrapToken(t.ThreadId, 24)),
                     Markup.Escape(t.Thread.Title),
                     Markup.Escape(t.Thread.CreatedAt)
                 );
@@ -445,7 +446,7 @@ public static class InteractiveUi
                             .PageSize(12)
                             .MoreChoicesText("[grey](move up and down to reveal more threads)[/]")
                             .AddChoices(threads)
-                            .UseConverter(t => $"{Markup.Escape(t.Thread.Title)}  [grey]{Markup.Escape(t.ThreadId)}[/]")
+                            .UseConverter(t => $"{Markup.Escape(t.Thread.Title)}  [grey]{Markup.Escape(Short(t.ThreadId, 24))}[/]")
                     );
 
                     await BrowseThreadAsync(api, keys, blocked, thread.ThreadId, ct);
@@ -514,11 +515,11 @@ public static class InteractiveUi
                     meta += $" [grey](edited {Markup.Escape(p.Post.EditedAt)})[/]";
                 }
 
-                var cidLine = $"[grey]CID:[/] {Markup.Escape(p.Cid)}";
-                var authorLine = $"[grey]Author:[/] {Markup.Escape(Short(p.Post.AuthorPubKey, 24))}";
+                var cidLine = KeyValueMarkup("CID", p.Cid, 48);
+                var authorLine = KeyValueMarkup("Author", p.Post.AuthorPubKey, 48);
                 var parentLine = string.IsNullOrWhiteSpace(p.Post.ParentPostCid)
                     ? null
-                    : $"[grey]Parent:[/] {Markup.Escape(Short(p.Post.ParentPostCid, 24))}";
+                    : KeyValueMarkup("Parent", p.Post.ParentPostCid, 48);
 
                 var body = p.Tombstoned
                     ? $"[red][tombstoned][/]\n{Markup.Escape(p.TombstoneReason ?? "")}".TrimEnd()
@@ -1529,10 +1530,24 @@ public static class InteractiveUi
                             .UseConverter(Markup.Escape)
                     );
                     var current = entries.GetValueOrDefault(key, "");
-                    var value = AnsiConsole.Prompt(
-                        new TextPrompt<string>($"Value for '{EscapePrompt(key)}' [grey](current: {EscapePrompt(Short(current, 60))})[/]")
-                            .AllowEmpty()
-                    );
+                    AnsiConsole.Clear();
+                    AnsiConsole.Write(new Rule("[bold]Edit property[/]").LeftJustified());
+                    AnsiConsole.MarkupLine($"[grey]Key:[/] {Markup.Escape(key)}");
+                    AnsiConsole.MarkupLine("[grey]Current value:[/]");
+                    if (string.IsNullOrEmpty(current))
+                    {
+                        AnsiConsole.MarkupLine("[grey]<empty>[/]");
+                    }
+                    else
+                    {
+                        var currentPanel = new Panel(new Markup(Markup.Escape(WrapToken(current, 72))))
+                            .BorderColor(Color.Grey)
+                            .Border(BoxBorder.Rounded);
+                        AnsiConsole.Write(currentPanel);
+                    }
+                    AnsiConsole.WriteLine();
+
+                    var value = AnsiConsole.Prompt(new TextPrompt<string>("New value (single line, blank = empty)").AllowEmpty());
                     if (value.Contains('\n') || value.Contains('\r'))
                     {
                         AnsiConsole.MarkupLine("[red]Value must be a single line.[/]");
@@ -1819,6 +1834,54 @@ public static class InteractiveUi
             return value;
         }
         return value.Length <= maxLen ? value : value[..Math.Max(0, maxLen - 3)] + "...";
+    }
+
+    private static string WrapToken(string value, int chunkSize)
+    {
+        if (string.IsNullOrEmpty(value) || chunkSize <= 0)
+        {
+            return value;
+        }
+        if (value.Length <= chunkSize)
+        {
+            return value;
+        }
+
+        var sb = new StringBuilder(value.Length + (value.Length / chunkSize) + 8);
+        for (var i = 0; i < value.Length; i += chunkSize)
+        {
+            if (i > 0)
+            {
+                sb.Append('\n');
+            }
+            sb.Append(value, i, Math.Min(chunkSize, value.Length - i));
+        }
+        return sb.ToString();
+    }
+
+    private static string KeyValueMarkup(string key, string value, int chunkSize)
+    {
+        key = key.Trim();
+        value ??= "";
+
+        var wrapped = WrapToken(value, chunkSize);
+        var parts = wrapped.Split('\n');
+
+        if (parts.Length == 0)
+        {
+            return $"[grey]{Markup.Escape(key)}:[/]";
+        }
+
+        var indent = new string(' ', key.Length + 2);
+        var sb = new StringBuilder();
+        sb.Append($"[grey]{Markup.Escape(key)}:[/] {Markup.Escape(parts[0])}");
+        for (var i = 1; i < parts.Length; i++)
+        {
+            sb.Append('\n');
+            sb.Append(indent);
+            sb.Append(Markup.Escape(parts[i]));
+        }
+        return sb.ToString();
     }
 
     private static string? EmptyToNull(string value)

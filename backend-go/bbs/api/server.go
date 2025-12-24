@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"flex-bbs/backend-go/bbs/config"
 	bbsindexer "flex-bbs/backend-go/bbs/indexer"
@@ -163,41 +164,66 @@ func (s *Server) getThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	boardID := tm.BoardID
-	_, bm, ok := s.loadBoardByID(ctx, boardID)
-	if !ok {
-		writeError(w, http.StatusNotFound, "board not found")
-		return
-	}
 
-	loadLog := func(ctx context.Context, cid string) (*types.BoardLogEntry, error) {
-		return s.Storage.LoadBoardLogEntry(ctx, cid)
-	}
-	boardLog, err := bbslog.FetchChain(ctx, bm.LogHeadCID, loadLog, func(e *types.BoardLogEntry) *string {
-		return e.PrevLogCID
-	}, bbslog.VerifyBoardLogEntry, 50_000)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
+	var (
+		rootPostCID string
+		posts       []bbslog.ReplayedPost
+	)
 
-	var rootPostCID string
-	for _, item := range boardLog {
-		if !item.ValidSignature {
-			continue
+	// Best-effort primary: follow the board log head from local boards.json (consistent ordering),
+	// but fall back to tag-based log discovery when the board isn't registered yet or is out-of-date.
+	var primaryPosts []bbslog.ReplayedPost
+	var primaryRoot string
+	if _, bm, ok := s.loadBoardByID(ctx, boardID); ok {
+		loadLog := func(ctx context.Context, cid string) (*types.BoardLogEntry, error) {
+			return s.Storage.LoadBoardLogEntry(ctx, cid)
 		}
-		e := item.Value
-		if e.Op == types.OpCreateThread && e.ThreadID == threadCID && e.PostCID != nil {
-			rootPostCID = *e.PostCID
-			break
+		boardLog, err := bbslog.FetchChain(ctx, bm.LogHeadCID, loadLog, func(e *types.BoardLogEntry) *string {
+			return e.PrevLogCID
+		}, bbslog.VerifyBoardLogEntry, 50_000)
+		if err != nil {
+			log.Printf("api getThread: board log fetch failed boardId=%s: %v", boardID, err)
+		} else {
+			for _, item := range boardLog {
+				if !item.ValidSignature {
+					continue
+				}
+				e := item.Value
+				if e.Op == types.OpCreateThread && e.ThreadID == threadCID && e.PostCID != nil {
+					primaryRoot = *e.PostCID
+					break
+				}
+			}
+
+			loadPost := func(ctx context.Context, cid string) (*types.Post, error) {
+				return s.Storage.LoadPost(ctx, cid)
+			}
+			replayed, err := bbslog.ReplayThread(ctx, boardLog, threadCID, loadPost, bbslog.VerifyPost, nil)
+			if err != nil {
+				log.Printf("api getThread: board log replay failed boardId=%s threadId=%s: %v", boardID, threadCID, err)
+			} else {
+				primaryPosts = replayed
+			}
 		}
 	}
 
-	loadPost := func(ctx context.Context, cid string) (*types.Post, error) {
-		return s.Storage.LoadPost(ctx, cid)
+	fallbackPosts, fallbackRoot, fallbackErr := s.replayThreadFromTags(ctx, boardID, threadCID)
+	if fallbackErr != nil {
+		log.Printf("api getThread: tag replay failed boardId=%s threadId=%s: %v", boardID, threadCID, fallbackErr)
 	}
-	posts, err := bbslog.ReplayThread(ctx, boardLog, threadCID, loadPost, bbslog.VerifyPost, nil)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+
+	// Prefer the result that contains more posts (helps cross-device sync when boards.json is stale).
+	rootPostCID = primaryRoot
+	posts = primaryPosts
+	if len(fallbackPosts) > len(primaryPosts) {
+		rootPostCID = fallbackRoot
+		posts = fallbackPosts
+	} else if rootPostCID == "" {
+		rootPostCID = fallbackRoot
+	}
+
+	if len(posts) == 0 && fallbackErr != nil && len(primaryPosts) == 0 {
+		writeError(w, http.StatusBadGateway, fallbackErr.Error())
 		return
 	}
 
@@ -225,6 +251,96 @@ func (s *Server) getThread(w http.ResponseWriter, r *http.Request) {
 		ThreadMeta:    threadMeta,
 		Posts:         outPosts,
 	})
+}
+
+func (s *Server) replayThreadFromTags(ctx context.Context, boardID, threadID string) ([]bbslog.ReplayedPost, string, error) {
+	if s.Storage == nil || s.Storage.Flex == nil {
+		return nil, "", nil
+	}
+
+	tag := storage.TagBoardThread(boardID, threadID)
+	cids, err := s.Storage.Flex.GetByAttrs(ctx, nil, []string{tag}, true)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(cids) == 0 {
+		return nil, "", nil
+	}
+
+	var entries []bbslog.EntryWithCID[types.BoardLogEntry]
+	for _, cid := range cids {
+		e, err := s.Storage.LoadBoardLogEntry(ctx, cid)
+		if err != nil {
+			continue
+		}
+		if e.Type != types.TypeBoardLogEntry {
+			continue
+		}
+		if e.BoardID != boardID || e.ThreadID != threadID {
+			continue
+		}
+		entries = append(entries, bbslog.EntryWithCID[types.BoardLogEntry]{
+			CID:            cid,
+			Value:          e,
+			ValidSignature: bbslog.VerifyBoardLogEntry(e),
+		})
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		a := entries[i].Value
+		b := entries[j].Value
+
+		ta, errA := time.Parse(time.RFC3339, a.CreatedAt)
+		tb, errB := time.Parse(time.RFC3339, b.CreatedAt)
+		switch {
+		case errA == nil && errB == nil && !ta.Equal(tb):
+			return ta.Before(tb)
+		case a.CreatedAt != b.CreatedAt:
+			return a.CreatedAt < b.CreatedAt
+		}
+
+		// Within the same second, preserve the typical lifecycle order.
+		weight := func(op string) int {
+			switch op {
+			case types.OpCreateThread:
+				return 0
+			case types.OpAddPost:
+				return 1
+			case types.OpEditPost:
+				return 2
+			case types.OpTombstonePost:
+				return 3
+			default:
+				return 9
+			}
+		}
+		wa, wb := weight(a.Op), weight(b.Op)
+		if wa != wb {
+			return wa < wb
+		}
+		return entries[i].CID < entries[j].CID
+	})
+
+	var rootPostCID string
+	for _, item := range entries {
+		if !item.ValidSignature {
+			continue
+		}
+		e := item.Value
+		if e.Op == types.OpCreateThread && e.PostCID != nil && *e.PostCID != "" {
+			rootPostCID = *e.PostCID
+			break
+		}
+	}
+
+	loadPost := func(ctx context.Context, cid string) (*types.Post, error) {
+		return s.Storage.LoadPost(ctx, cid)
+	}
+	posts, err := bbslog.ReplayThread(ctx, entries, threadID, loadPost, bbslog.VerifyPost, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	return posts, rootPostCID, nil
 }
 
 func (s *Server) createThread(w http.ResponseWriter, r *http.Request) {

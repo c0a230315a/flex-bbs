@@ -93,6 +93,17 @@ GitHub Actions builds OS‑specific bundles that include everything needed:
 
 Note: `Search posts` requires backend role `indexer` or `full`.
 
+### Search posts
+
+`Search posts` queries the local index DB (maintained by `bbs-node` in `indexer` / `full` roles).
+
+- `q` (required): free-text query
+- `boardId` (optional): filter by board ID (e.g. `bbs.general`)
+- `author` (optional): filter by author pubkey (e.g. `ed25519:...`)
+- `since` / `until` (optional): RFC3339 timestamps (e.g. `2025-12-24T12:00:00Z`)
+- Paging: `Prev page` / `Next page`
+- From results: `Open thread` jumps to the thread view
+
 ## LAN / 2-machine setup (peer connectivity)
 
 Flexible‑IPFS needs at least 1 peer connection (see `dht/peerlist`). On a LAN, you can connect peers either by configuring `ipfs.endpoint` manually, or by using mDNS.

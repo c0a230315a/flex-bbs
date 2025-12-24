@@ -102,6 +102,17 @@ GitHub Actions で OS 別の「全部入りバンドル」を作成します。�
 
 注意: `Search posts` は `bbs-node` role が `indexer` または `full` の場合のみ利用できます（TUI: `Settings` → `Client / Backend`）。
 
+### Search posts の使い方
+
+`Search posts` は `bbs-node` のローカル index DB（`indexer` / `full` role が維持）を検索します。
+
+- `q`（必須）: フリーテキスト検索
+- `Board ID`（任意）: `bbs.general` など boardId で絞り込み
+- `Author pubKey`（任意）: `ed25519:...` など author で絞り込み
+- `Since` / `Until`（任意）: RFC3339（例: `2025-12-24T12:00:00Z`）
+- ページ送り: `Prev page` / `Next page`
+- 結果から `Open thread` で該当スレッドを開きます
+
 ## Windows 2台（mDNS）TUI スタートアップガイド（FULL / CLIENT + ボード作成）
 
 Flexible‑IPFS は `putvaluewithattr` のために **最低 1 つのピア接続**が必要です。ピア未接続（`dht/peerlist` が `""`）だと `Create board` が失敗します。
