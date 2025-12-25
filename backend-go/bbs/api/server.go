@@ -80,13 +80,65 @@ func (s *Server) listBoards(w http.ResponseWriter, r *http.Request) {
 	refs := s.Boards.List()
 	out := make([]BoardItem, 0, len(refs))
 	for _, ref := range refs {
-		bm, err := s.Storage.LoadBoardMeta(ctx, ref.BoardMetaCID)
+		// Fast path: indexer DB has the decoded board meta (avoids blocking on flexipfs downloads).
+		if s.Indexer != nil {
+			if b, err := s.Indexer.GetBoardByID(ctx, ref.BoardID); err == nil && b != nil && strings.TrimSpace(b.BoardMetaCID) == ref.BoardMetaCID {
+				out = append(out, BoardItem{
+					BoardMetaCID: ref.BoardMetaCID,
+					Board: types.BoardMeta{
+						Version:     types.Version1,
+						Type:        types.TypeBoardMeta,
+						BoardID:     b.BoardID,
+						Title:       b.Title,
+						Description: b.Description,
+						LogHeadCID:  b.LogHeadCID,
+						CreatedAt:   b.CreatedAt,
+						CreatedBy:   b.CreatedBy,
+						Signature:   b.Signature,
+					},
+				})
+				continue
+			}
+		}
+
+		// Slow path: fetch the board meta from flexipfs, but keep list responsive.
+		loadCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		bm, err := s.Storage.LoadBoardMeta(loadCtx, ref.BoardMetaCID)
+		cancel()
 		if err != nil {
 			log.Printf("api listBoards: load boardMeta cid=%s: %v", ref.BoardMetaCID, err)
+			out = append(out, BoardItem{
+				BoardMetaCID: ref.BoardMetaCID,
+				Board: types.BoardMeta{
+					Version:     types.Version1,
+					Type:        types.TypeBoardMeta,
+					BoardID:     ref.BoardID,
+					Title:       ref.BoardID,
+					Description: "",
+					LogHeadCID:  nil,
+					CreatedAt:   "",
+					CreatedBy:   "",
+					Signature:   "",
+				},
+			})
 			continue
 		}
 		if !bbslog.VerifyBoardMeta(bm) {
 			log.Printf("api listBoards: invalid boardMeta signature cid=%s boardId=%s", ref.BoardMetaCID, bm.BoardID)
+			out = append(out, BoardItem{
+				BoardMetaCID: ref.BoardMetaCID,
+				Board: types.BoardMeta{
+					Version:     types.Version1,
+					Type:        types.TypeBoardMeta,
+					BoardID:     ref.BoardID,
+					Title:       ref.BoardID,
+					Description: "",
+					LogHeadCID:  nil,
+					CreatedAt:   "",
+					CreatedBy:   "",
+					Signature:   "",
+				},
+			})
 			continue
 		}
 		out = append(out, BoardItem{BoardMetaCID: ref.BoardMetaCID, Board: *bm})

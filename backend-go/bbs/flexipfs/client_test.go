@@ -52,6 +52,42 @@ func TestPutValueWithAttr_URLencodesValue(t *testing.T) {
 	}
 }
 
+func TestPutValueWithAttr_WritesGetDataFile(t *testing.T) {
+	baseDir := t.TempDir()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v0/dht/peerlist":
+			_, _ = w.Write([]byte(`"peer1"`))
+		case "/api/v0/dht/putvaluewithattr":
+			_ = json.NewEncoder(w).Encode(map[string]any{"CID_file": "baf_test"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New(srv.URL + "/api/v0")
+	c.BaseDir = baseDir
+
+	value := `{"hello":"world"}`
+	cid, err := c.PutValueWithAttr(context.Background(), value, []string{"post_1"}, []string{"board_bbs.general"})
+	if err != nil {
+		t.Fatalf("PutValueWithAttr: %v", err)
+	}
+	if cid != "baf_test" {
+		t.Fatalf("cid mismatch: %q", cid)
+	}
+
+	b, err := os.ReadFile(filepath.Join(baseDir, "getdata", cid+".txt"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if got := string(decodeGetDataValue(b)); got != value {
+		t.Fatalf("cached value mismatch: got=%q want=%q", got, value)
+	}
+}
+
 func TestPutValueWithAttr_EncodesSpacesAsPercent20(t *testing.T) {
 	var rawQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -93,6 +129,39 @@ func TestGetValue_UnwrapsJSONString(t *testing.T) {
 	}
 	if strings.TrimSpace(string(b)) != `{"hello":"world"}` {
 		t.Fatalf("unwrap mismatch: %q", string(b))
+	}
+}
+
+func TestGetValue_WritesGetDataFile_OnSuccess(t *testing.T) {
+	baseDir := t.TempDir()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v0/dht/getvalue" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`"{\"hello\":\"world\"}"`))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New(srv.URL + "/api/v0")
+	c.BaseDir = baseDir
+
+	cid := "baf_test"
+	b, err := c.GetValue(context.Background(), cid)
+	if err != nil {
+		t.Fatalf("GetValue: %v", err)
+	}
+	if got := strings.TrimSpace(string(b)); got != `{"hello":"world"}` {
+		t.Fatalf("value mismatch: %q", got)
+	}
+
+	cached, err := os.ReadFile(filepath.Join(baseDir, "getdata", cid+".txt"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if got := strings.TrimSpace(string(decodeGetDataValue(cached))); got != `{"hello":"world"}` {
+		t.Fatalf("cached value mismatch: %q", got)
 	}
 }
 

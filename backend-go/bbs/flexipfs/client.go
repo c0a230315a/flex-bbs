@@ -155,7 +155,12 @@ func (c *Client) PutValueWithAttr(ctx context.Context, value string, attrs, tags
 			return "", err
 		}
 		if status >= 200 && status < 300 {
-			return extractCID(body)
+			cid, err := extractCID(body)
+			if err != nil {
+				return "", err
+			}
+			_ = c.writeGetDataValue(cid, []byte(value))
+			return cid, nil
 		}
 
 		httpErr := httpError(status, body, header, trailer)
@@ -250,6 +255,7 @@ func (c *Client) GetValue(ctx context.Context, cid string) ([]byte, error) {
 				}
 				v2 := unwrapValue(body2)
 				if !isDownloadingPlaceholder(v2, cid) {
+					_ = c.writeGetDataValue(cid, v2)
 					return v2, nil
 				}
 				if s := strings.TrimSpace(string(v2)); s != "" {
@@ -273,6 +279,7 @@ func (c *Client) GetValue(ctx context.Context, cid string) ([]byte, error) {
 		return nil, fmt.Errorf("flexipfs getvalue pending: %s", lastPlaceholder)
 	}
 
+	_ = c.writeGetDataValue(cid, v)
 	return v, nil
 }
 
@@ -631,6 +638,29 @@ func decodeGetDataValue(b []byte) []byte {
 	return b
 }
 
+func encodeGetDataValue(payload []byte) []byte {
+	if len(payload) == 0 {
+		return payload
+	}
+	if len(payload) <= 26 {
+		prefix := byte('A' + (len(payload) - 1))
+		out := make([]byte, 1+len(payload))
+		out[0] = prefix
+		copy(out[1:], payload)
+		return out
+	}
+	if len(payload) <= 0xFFFF {
+		out := make([]byte, 3+len(payload))
+		out[0] = 'Y'
+		out[1] = byte(len(payload) >> 8)
+		out[2] = byte(len(payload))
+		copy(out[3:], payload)
+		return out
+	}
+	// Large values: keep raw to avoid truncation; callers can still read them as-is.
+	return payload
+}
+
 func (c *Client) readGetDataValue(cid string) ([]byte, error) {
 	baseDir := strings.TrimSpace(c.BaseDir)
 	if baseDir == "" {
@@ -695,6 +725,54 @@ func (c *Client) readGetDataValue(cid string) ([]byte, error) {
 		return nil, firstErr
 	}
 	return nil, os.ErrNotExist
+}
+
+func (c *Client) writeGetDataValue(cid string, payload []byte) error {
+	baseDir := strings.TrimSpace(c.BaseDir)
+	if baseDir == "" {
+		return os.ErrNotExist
+	}
+
+	dataDirs := []string{
+		filepath.Join(baseDir, "getdata"),
+	}
+	if v := readKadrttProperty(baseDir, "ipfs.datapath"); v != "" {
+		if filepath.IsAbs(v) {
+			dataDirs = append(dataDirs, v)
+		} else {
+			dataDirs = append(dataDirs, filepath.Join(baseDir, v))
+		}
+	}
+
+	encoded := encodeGetDataValue(payload)
+
+	var (
+		firstErr error
+		wrote    bool
+	)
+	for _, dir := range uniqStrings(dataDirs) {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		p := filepath.Join(dir, cid+".txt")
+		if err := os.WriteFile(p, encoded, 0o644); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		wrote = true
+	}
+	if wrote {
+		return nil
+	}
+	if firstErr != nil {
+		return firstErr
+	}
+	return os.ErrNotExist
 }
 
 func readKadrttProperty(baseDir, key string) string {

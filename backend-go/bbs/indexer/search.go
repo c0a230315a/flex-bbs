@@ -3,6 +3,7 @@ package indexer
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 )
 
@@ -232,6 +233,53 @@ func (i *Indexer) SearchBoards(ctx context.Context, p SearchBoardsParams) ([]Sea
 		return nil, err
 	}
 	return out, nil
+}
+
+func (i *Indexer) GetBoardByID(ctx context.Context, boardID string) (*SearchBoardResult, error) {
+	if i.db == nil {
+		return nil, ErrIndexerClosed
+	}
+
+	boardID = strings.TrimSpace(boardID)
+	if boardID == "" {
+		return nil, nil
+	}
+
+	row := i.db.QueryRowContext(ctx, `
+		SELECT
+			board_id,
+			board_meta_cid,
+			title,
+			description,
+			created_at,
+			created_by,
+			signature,
+			log_head_cid
+		FROM boards
+		WHERE board_id = ?
+	`, boardID)
+
+	var r SearchBoardResult
+	var logHead sql.NullString
+	if err := row.Scan(
+		&r.BoardID,
+		&r.BoardMetaCID,
+		&r.Title,
+		&r.Description,
+		&r.CreatedAt,
+		&r.CreatedBy,
+		&r.Signature,
+		&logHead,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if logHead.Valid {
+		r.LogHeadCID = &logHead.String
+	}
+	return &r, nil
 }
 
 func (i *Indexer) SearchThreads(ctx context.Context, p SearchThreadsParams) ([]SearchThreadResult, error) {
