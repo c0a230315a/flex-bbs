@@ -162,8 +162,11 @@ fi
 
 full_ma="/ip4/${full_ip}/tcp/4001/ipfs/${full_peer}"
 
-echo "Configuring full flex-ipfs ipfs.endpoint to self (${full_ma})..." >&2
-dc exec -T full sh -lc '
+FULL_SET_SELF_ENDPOINT="${FULL_SET_SELF_ENDPOINT:-1}"
+
+if [[ "${FULL_SET_SELF_ENDPOINT}" == "1" ]]; then
+  echo "Configuring full flex-ipfs ipfs.endpoint to self (${full_ma})..." >&2
+  dc exec -T full sh -lc '
 set -e
 ma="$1"
 prop="/app/flexible-ipfs-base/kadrtt.properties"
@@ -172,18 +175,21 @@ if test -f "${prop}"; then
 fi
 ' sh "${full_ma}"
 
-echo "Restarting full to apply ipfs.endpoint..." >&2
-dc restart full >/dev/null
-echo "Waiting for full node health (after restart)..." >&2
-wait_http_ok "http://127.0.0.1:${FULL_HTTP_PORT}/healthz" 120 1
-echo "Waiting for full flex-ipfs api (after restart)..." >&2
-wait_flexipfs_api full 180 1
+  echo "Restarting full to apply ipfs.endpoint..." >&2
+  dc restart full >/dev/null
+  echo "Waiting for full node health (after restart)..." >&2
+  wait_http_ok "http://127.0.0.1:${FULL_HTTP_PORT}/healthz" 120 1
+  echo "Waiting for full flex-ipfs api (after restart)..." >&2
+  wait_flexipfs_api full 180 1
 
-full_cid="$(dc ps -q full)"
-full_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${full_cid}")"
-full_id_json="$(dc exec -T full curl -fsS -X POST "http://127.0.0.1:5001/api/v0/id")"
-full_peer="$(printf '%s' "${full_id_json}" | json_get ID)"
-full_ma="/ip4/${full_ip}/tcp/4001/ipfs/${full_peer}"
+  full_cid="$(dc ps -q full)"
+  full_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${full_cid}")"
+  full_id_json="$(dc exec -T full curl -fsS -X POST "http://127.0.0.1:5001/api/v0/id")"
+  full_peer="$(printf '%s' "${full_id_json}" | json_get ID)"
+  full_ma="/ip4/${full_ip}/tcp/4001/ipfs/${full_peer}"
+else
+  echo "Skipping full flex-ipfs ipfs.endpoint self override (FULL_SET_SELF_ENDPOINT=${FULL_SET_SELF_ENDPOINT@Q})" >&2
+fi
 
 export CLIENT_FLEXIPFS_GW_ENDPOINT="${full_ma}"
 echo "Starting client node with CLIENT_FLEXIPFS_GW_ENDPOINT=${CLIENT_FLEXIPFS_GW_ENDPOINT}" >&2

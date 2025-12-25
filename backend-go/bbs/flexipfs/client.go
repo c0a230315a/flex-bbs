@@ -174,6 +174,14 @@ func (c *Client) PutValueWithAttr(ctx context.Context, value string, attrs, tags
 		}
 
 		if status == http.StatusBadRequest && len(bytes.TrimSpace(body)) == 0 {
+			// Some Flexible-IPFS builds respond with HTTP 400 + empty body when attrs are present (known instability).
+			// Try a tags-only write first so core flows can still proceed without attribute indexing.
+			if useAttrs {
+				useAttrs = false
+				lastPutErr = httpErr
+				continue
+			}
+
 			// Flexible-IPFS can return HTTP 400 with an empty body when it's still bootstrapping.
 			// It's also known to crash on put when its peer list is empty; fail fast in that case.
 			if peers, perr := c.PeerList(ctx); perr == nil && strings.TrimSpace(peers) == "" {

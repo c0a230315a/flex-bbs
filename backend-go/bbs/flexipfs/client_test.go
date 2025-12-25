@@ -240,13 +240,17 @@ func TestPutValueWithAttr_PeerListEmpty_FailsFast(t *testing.T) {
 }
 
 func TestPutValueWithAttr_RetriesOnHTTP400EmptyBody(t *testing.T) {
-	var putCalls int
+	var (
+		putCalls int
+		gotAttrs []string
+	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v0/dht/peerlist":
 			_, _ = w.Write([]byte(`"peer1"`))
 		case "/api/v0/dht/putvaluewithattr":
 			putCalls++
+			gotAttrs = append(gotAttrs, r.URL.Query().Get("attrs"))
 			if putCalls < 3 {
 				w.WriteHeader(http.StatusBadRequest)
 				return
@@ -270,6 +274,9 @@ func TestPutValueWithAttr_RetriesOnHTTP400EmptyBody(t *testing.T) {
 	}
 	if putCalls != 3 {
 		t.Fatalf("expected 3 put attempts, got %d", putCalls)
+	}
+	if len(gotAttrs) != 3 || gotAttrs[0] == "" || gotAttrs[1] != "" || gotAttrs[2] != "" {
+		t.Fatalf("attrs should be sent first then omitted: %#v", gotAttrs)
 	}
 }
 
