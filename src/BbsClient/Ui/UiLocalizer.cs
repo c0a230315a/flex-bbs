@@ -150,6 +150,7 @@ public sealed class UiLocalizer
         ["Backend role (managed)"] = "バックエンド role（管理対象）",
         ["Backend base URL"] = "バックエンド base URL",
         ["Backend listen address (host:port, blank = derived) [grey](current: {0})[/]"] = "バックエンド listen アドレス（host:port、空欄=自動） [grey](現在: {0})[/]",
+        ["LAN peers cannot reach this backend (listening on {0}). Set Backend listen to 0.0.0.0:8080 and allow TCP 8080."] = "LAN の他端末からこのバックエンドに到達できません（listen: {0}）。Backend listen を 0.0.0.0:8080 にして、TCP 8080 を許可してください。",
         ["Auto-start backend"] = "バックエンド自動起動",
         ["Auto-start backend (manage local bbs-node)?"] = "バックエンドを自動起動して管理しますか（ローカル bbs-node）？",
         ["bbs-node path"] = "bbs-node パス",

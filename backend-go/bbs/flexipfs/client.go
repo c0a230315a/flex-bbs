@@ -225,6 +225,20 @@ func (c *Client) GetValue(ctx context.Context, cid string) ([]byte, error) {
 		return b, nil
 	}
 
+	return c.getValueFromAPI(ctx, cid, true)
+}
+
+// GetValueFresh forces a re-fetch from the Flexible-IPFS HTTP API by invalidating any existing
+// <baseDir>/getdata/<cid>.txt cache file(s) first.
+//
+// This is useful when Flexible-IPFS has written a corrupted/incomplete cache file (it may refuse
+// to overwrite an existing file, leading to persistent non-JSON values like "Not Found").
+func (c *Client) GetValueFresh(ctx context.Context, cid string) ([]byte, error) {
+	_ = c.invalidateGetDataValue(cid)
+	return c.getValueFromAPI(ctx, cid, true)
+}
+
+func (c *Client) getValueFromAPI(ctx context.Context, cid string, allowCacheDuringPolling bool) ([]byte, error) {
 	q := url.Values{}
 	q.Set("cid", cid)
 	body, status, header, trailer, err := c.postQuery(ctx, "/dht/getvalue", q)
@@ -247,8 +261,10 @@ func (c *Client) GetValue(ctx context.Context, cid string) ([]byte, error) {
 		lastPlaceholder := strings.TrimSpace(string(v))
 		sleep := 50 * time.Millisecond
 		for {
-			if b, err := c.readGetDataValue(cid); err == nil {
-				return b, nil
+			if allowCacheDuringPolling {
+				if b, err := c.readGetDataValue(cid); err == nil {
+					return b, nil
+				}
 			}
 
 			// Some builds eventually start returning the value directly once the background download completes.
@@ -289,6 +305,44 @@ func (c *Client) GetValue(ctx context.Context, cid string) ([]byte, error) {
 
 	_ = c.writeGetDataValue(cid, v)
 	return v, nil
+}
+
+func (c *Client) invalidateGetDataValue(cid string) error {
+	baseDir := strings.TrimSpace(c.BaseDir)
+	if baseDir == "" {
+		return os.ErrNotExist
+	}
+
+	dataDirs := []string{
+		filepath.Join(baseDir, "getdata"),
+	}
+	if v := readKadrttProperty(baseDir, "ipfs.datapath"); v != "" {
+		if filepath.IsAbs(v) {
+			dataDirs = append(dataDirs, v)
+		} else {
+			dataDirs = append(dataDirs, filepath.Join(baseDir, v))
+		}
+	}
+
+	var firstErr error
+	removedAny := false
+	for _, dir := range uniqStrings(dataDirs) {
+		p := filepath.Join(dir, cid+".txt")
+		if err := os.Remove(p); err != nil {
+			if !errors.Is(err, os.ErrNotExist) && firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		removedAny = true
+	}
+	if removedAny {
+		return nil
+	}
+	if firstErr != nil {
+		return firstErr
+	}
+	return os.ErrNotExist
 }
 
 func (c *Client) GetByAttrs(ctx context.Context, attrs, tags []string, showAll bool) ([]string, error) {

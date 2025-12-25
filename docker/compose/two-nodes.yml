@@ -12,7 +12,7 @@ services:
     command:
       - "--role=full"
       - "--http"
-      - "0.0.0.0:18080"
+      - "${FULL_HTTP_BIND:-0.0.0.0:18080}"
       - "--data-dir"
       - "/data"
       - "--autostart-flexipfs=true"
@@ -38,7 +38,7 @@ services:
     command:
       - "--role=client"
       - "--http"
-      - "0.0.0.0:18080"
+      - "${CLIENT_HTTP_BIND:-0.0.0.0:18080}"
       - "--data-dir"
       - "/data"
       - "--autostart-flexipfs=true"

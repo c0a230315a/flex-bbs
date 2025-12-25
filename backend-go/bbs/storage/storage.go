@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -103,8 +104,39 @@ func (s *Storage) loadJSON(ctx context.Context, cid string, out any) error {
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(b, out); err != nil {
-		return fmt.Errorf("unmarshal cid=%s: %w", cid, err)
+
+	tryUnmarshal := func(payload []byte) error {
+		if err := json.Unmarshal(payload, out); err != nil {
+			trim := bytes.TrimSpace(payload)
+			// Only include a short preview when the payload clearly isn't JSON (e.g. "Not Found"),
+			// to avoid leaking post bodies into logs/errors.
+			if len(trim) > 0 && trim[0] != '{' && trim[0] != '[' {
+				preview := trim
+				if len(preview) > 160 {
+					preview = preview[:160]
+				}
+				preview = bytes.ReplaceAll(preview, []byte{'\r'}, []byte{' '})
+				preview = bytes.ReplaceAll(preview, []byte{'\n'}, []byte{' '})
+				preview = bytes.ReplaceAll(preview, []byte{'\t'}, []byte{' '})
+				return fmt.Errorf("unmarshal cid=%s: %w (value_preview=%q)", cid, err, string(preview))
+			}
+			return fmt.Errorf("unmarshal cid=%s: %w", cid, err)
+		}
+		return nil
+	}
+
+	if err := tryUnmarshal(b); err != nil {
+		// Flexible-IPFS may write a corrupted/incomplete getdata cache file and refuse to overwrite it.
+		// Retry once by forcing a fresh fetch (invalidates any existing <cid>.txt cache file first).
+		fresh, ferr := s.Flex.GetValueFresh(ctx, cid)
+		if ferr != nil {
+			return fmt.Errorf("%v (fresh fetch failed: %w)", err, ferr)
+		}
+		uerr := tryUnmarshal(fresh)
+		if uerr == nil {
+			return nil
+		}
+		return fmt.Errorf("%v (after fresh fetch: %v)", err, uerr)
 	}
 	return nil
 }

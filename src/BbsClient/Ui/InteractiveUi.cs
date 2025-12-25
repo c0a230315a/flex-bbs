@@ -1455,8 +1455,15 @@ public static class InteractiveUi
             AnsiConsole.Write(new Rule($"[bold]{ML("Settings")}[/]").LeftJustified());
             AnsiConsole.MarkupLine($"[grey]{ML("Config")}:[/] {Markup.Escape(configStore.ConfigPath)}");
             AnsiConsole.MarkupLine($"[grey]{ML("Backend")}:[/] {Markup.Escape(cfg.BackendBaseUrl)} [{(healthy ? "green" : "red")}]{ML(healthy ? "up" : "down")}[/]");
-            AnsiConsole.MarkupLine($"[grey]{ML("Backend listen (managed)")}:[/] {Markup.Escape(BbsNodeArgsBuilder.ResolveListenHostPort(cfg))}");
+            var listenHostPort = BbsNodeArgsBuilder.ResolveListenHostPort(cfg);
+            AnsiConsole.MarkupLine($"[grey]{ML("Backend listen (managed)")}:[/] {Markup.Escape(listenHostPort)}");
             AnsiConsole.MarkupLine($"[grey]{ML("Backend role (managed)")}:[/] {Markup.Escape(cfg.BackendRole)}");
+            if ((cfg.BackendRole == "full" || cfg.BackendRole == "indexer") && IsLoopbackHostPort(listenHostPort))
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]{Markup.Escape(F("LAN peers cannot reach this backend (listening on {0}). Set Backend listen to 0.0.0.0:8080 and allow TCP 8080.", listenHostPort))}[/]"
+                );
+            }
             AnsiConsole.MarkupLine($"[grey]{ML("UI language")}:[/] {Markup.Escape(L(cfg.UiLanguage))}");
             AnsiConsole.MarkupLine($"[grey]{ML("Time zone")}:[/] {Markup.Escape(cfg.UiTimeZone.ToUpperInvariant())}");
             AnsiConsole.MarkupLine($"[grey]{ML("Auto-start backend")}:[/] {cfg.StartBackend}");
@@ -2453,6 +2460,25 @@ public static class InteractiveUi
             return false;
         }
         return true;
+    }
+
+    private static bool IsLoopbackHostPort(string hostPort)
+    {
+        hostPort = hostPort.Trim();
+        if (string.IsNullOrWhiteSpace(hostPort))
+        {
+            return true;
+        }
+        try
+        {
+            var u = new Uri("http://" + hostPort);
+            var host = u.Host.Trim().ToLowerInvariant();
+            return host is "127.0.0.1" or "localhost" or "::1";
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static string EscapePrompt(string value)
