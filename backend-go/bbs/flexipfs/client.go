@@ -225,25 +225,52 @@ func (c *Client) GetValue(ctx context.Context, cid string) ([]byte, error) {
 	v := unwrapValue(body)
 	if isDownloadingPlaceholder(v, cid) {
 		// Flexible-IPFS returns a placeholder string and downloads content to <baseDir>/getdata/<cid>.txt asynchronously.
-		// Prefer the local file when we have access to the base directory.
-		pollUntil := time.Now().Add(2 * time.Second)
+		// Prefer the local file when we have access to the base directory, but also retry /getvalue in case the caller
+		// can't access the getdata directory (e.g., BaseDir isn't configured).
+		pollUntil := time.Now().Add(15 * time.Second)
 		if dl, ok := ctx.Deadline(); ok && dl.Before(pollUntil) {
 			pollUntil = dl
 		}
+		lastPlaceholder := strings.TrimSpace(string(v))
+		sleep := 50 * time.Millisecond
 		for {
 			if b, err := c.readGetDataValue(cid); err == nil {
 				return b, nil
 			}
+
+			// Some builds eventually start returning the value directly once the background download completes.
+			q2 := url.Values{}
+			q2.Set("cid", cid)
+			rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			body2, status2, header2, trailer2, err := c.postQuery(rctx, "/dht/getvalue", q2)
+			cancel()
+			if err == nil {
+				if status2 < 200 || status2 >= 300 {
+					return nil, httpError(status2, body2, header2, trailer2)
+				}
+				v2 := unwrapValue(body2)
+				if !isDownloadingPlaceholder(v2, cid) {
+					return v2, nil
+				}
+				if s := strings.TrimSpace(string(v2)); s != "" {
+					lastPlaceholder = s
+				}
+			}
+
 			if time.Now().After(pollUntil) {
 				break
 			}
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(50 * time.Millisecond):
+			case <-time.After(sleep):
+			}
+			sleep += 50 * time.Millisecond
+			if sleep > 500*time.Millisecond {
+				sleep = 500 * time.Millisecond
 			}
 		}
-		return nil, fmt.Errorf("flexipfs getvalue pending: %s", strings.TrimSpace(string(v)))
+		return nil, fmt.Errorf("flexipfs getvalue pending: %s", lastPlaceholder)
 	}
 
 	return v, nil

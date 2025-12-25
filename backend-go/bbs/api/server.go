@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -107,6 +108,7 @@ func (s *Server) getBoard(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listThreads(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	boardID := r.PathValue("boardId")
+	s.syncBoardFromTrustedIndexersBestEffort(ctx, boardID)
 	_, bm, ok := s.loadBoardByID(ctx, boardID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "board not found")
@@ -126,12 +128,14 @@ func (s *Server) listThreads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type th struct {
-		ThreadCID   string
-		CreatedAt   string
-		RootPostCID string
+	type threadState struct {
+		ThreadCID        string
+		CreatedAt        string
+		RootPostCID      string
+		RootAuthorPubKey string
+		RootTombstoned   bool
 	}
-	byThread := make(map[string]th)
+	byThread := make(map[string]*threadState)
 	for _, item := range boardLog {
 		if !item.ValidSignature {
 			continue
@@ -140,20 +144,63 @@ func (s *Server) listThreads(w http.ResponseWriter, r *http.Request) {
 		if e.BoardID != boardID {
 			continue
 		}
-		if e.Op != types.OpCreateThread {
-			continue
+
+		switch e.Op {
+		case types.OpCreateThread:
+			if e.PostCID == nil || *e.PostCID == "" {
+				continue
+			}
+			if _, ok := byThread[e.ThreadID]; ok {
+				continue
+			}
+			byThread[e.ThreadID] = &threadState{
+				ThreadCID:        e.ThreadID,
+				CreatedAt:        e.CreatedAt,
+				RootPostCID:      *e.PostCID,
+				RootAuthorPubKey: e.AuthorPubKey,
+			}
+
+		case types.OpEditPost:
+			st, ok := byThread[e.ThreadID]
+			if !ok || st == nil {
+				continue
+			}
+			if e.OldPostCID == nil || *e.OldPostCID == "" || e.NewPostCID == nil || *e.NewPostCID == "" {
+				continue
+			}
+			if *e.OldPostCID != st.RootPostCID {
+				continue
+			}
+			// Align with thread replay semantics: only the post author can edit it.
+			if st.RootAuthorPubKey != "" && e.AuthorPubKey != st.RootAuthorPubKey {
+				continue
+			}
+			st.RootPostCID = *e.NewPostCID
+
+		case types.OpTombstonePost:
+			st, ok := byThread[e.ThreadID]
+			if !ok || st == nil {
+				continue
+			}
+			if e.TargetPostCID == nil || *e.TargetPostCID == "" {
+				continue
+			}
+			if *e.TargetPostCID != st.RootPostCID {
+				continue
+			}
+			// Align with thread replay semantics: only the post author can tombstone it.
+			if st.RootAuthorPubKey != "" && e.AuthorPubKey != st.RootAuthorPubKey {
+				continue
+			}
+			st.RootTombstoned = true
 		}
-		if e.PostCID == nil || *e.PostCID == "" {
-			continue
-		}
-		if _, ok := byThread[e.ThreadID]; ok {
-			continue
-		}
-		byThread[e.ThreadID] = th{ThreadCID: e.ThreadID, CreatedAt: e.CreatedAt, RootPostCID: *e.PostCID}
 	}
 
 	threads := make([]ThreadItem, 0, len(byThread))
 	for _, x := range byThread {
+		if x == nil || x.RootTombstoned {
+			continue
+		}
 		tm, err := s.Storage.LoadThreadMeta(ctx, x.ThreadCID)
 		if err != nil {
 			log.Printf("api listThreads: load threadMeta cid=%s: %v", x.ThreadCID, err)
@@ -187,6 +234,7 @@ func (s *Server) getThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	boardID := tm.BoardID
+	s.syncBoardFromTrustedIndexersBestEffort(ctx, boardID)
 
 	var (
 		rootPostCID string
@@ -916,8 +964,8 @@ func (s *Server) advanceBoardLogHead(ctx context.Context, bm *types.BoardMeta, b
 }
 
 func (s *Server) announceBoard(w http.ResponseWriter, r *http.Request) {
-	if s.Role != "indexer" && s.Role != "full" {
-		writeError(w, http.StatusNotImplemented, "announce is available in indexer/full roles")
+	if s.Role != "indexer" && s.Role != "full" && s.Role != "client" {
+		writeError(w, http.StatusNotImplemented, "announce is available in client/indexer/full roles")
 		return
 	}
 	ctx := r.Context()
@@ -959,7 +1007,21 @@ func (s *Server) announceBoard(w http.ResponseWriter, r *http.Request) {
 	accepted := true
 	ignoredReason := ""
 
-	if currentCID, currentBM, ok := s.loadBoardByID(ctx, boardID); ok {
+	currentCID, currentBM, hasCurrent := s.loadBoardByID(ctx, boardID)
+
+	// Clients should not auto-add unknown boards via announce; only accept updates for boards that are already registered.
+	if s.Role == "client" && !hasCurrent {
+		writeJSON(w, http.StatusOK, AnnounceBoardResponse{
+			BoardID:       boardID,
+			BoardMetaCID:  req.BoardMetaCID,
+			Accepted:      false,
+			IgnoredReason: "not-registered",
+			Forwarded:     0,
+		})
+		return
+	}
+
+	if hasCurrent {
 		accept, reason, err := s.shouldAcceptBoardMetaUpdate(ctx, boardID, currentCID, currentBM, req.BoardMetaCID, bm)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err.Error())
@@ -982,7 +1044,10 @@ func (s *Server) announceBoard(w http.ResponseWriter, r *http.Request) {
 		if s.Indexer != nil {
 			_ = s.Indexer.SyncBoardByMetaCID(ctx, req.BoardMetaCID)
 		}
-		forwarded = s.forwardBoardAnnounceBestEffort(ctx, req.BoardMetaCID)
+		// Avoid bouncing announces back to trusted indexers when a client is merely updating its local state.
+		if s.Role != "client" {
+			forwarded = s.forwardBoardAnnounceBestEffort(ctx, req.BoardMetaCID)
+		}
 	} else {
 		log.Printf("api announceBoard ignored boardId=%s reason=%s cid=%s", boardID, ignoredReason, req.BoardMetaCID)
 	}
@@ -1077,6 +1142,93 @@ func (s *Server) isBoardLogDescendant(ctx context.Context, boardID, headCID, anc
 		current = *e.PrevLogCID
 	}
 	return false, nil
+}
+
+func (s *Server) syncBoardFromTrustedIndexersBestEffort(ctx context.Context, boardID string) {
+	if s.Role != "client" || s.TrustedIndexers == nil || s.Boards == nil {
+		return
+	}
+	boardID = strings.TrimSpace(boardID)
+	if boardID == "" {
+		return
+	}
+
+	// Only sync known boards; clients don't auto-add boards via trusted indexers.
+	currentCID, currentBM, ok := s.loadBoardByID(ctx, boardID)
+	if !ok || currentBM == nil {
+		return
+	}
+	currentCID = strings.TrimSpace(currentCID)
+
+	if err := s.TrustedIndexers.Load(); err != nil {
+		log.Printf("trusted indexers load error: %v", err)
+		return
+	}
+	peers := s.TrustedIndexers.List()
+	if len(peers) == 0 {
+		return
+	}
+
+	s.initNetworkDeps()
+	for _, baseURL := range peers {
+		endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/boards/" + url.PathEscape(boardID)
+
+		rctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		req, err := http.NewRequestWithContext(rctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			cancel()
+			continue
+		}
+
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			cancel()
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		_ = resp.Body.Close()
+		cancel()
+
+		if resp.StatusCode == http.StatusNotFound {
+			continue
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			continue
+		}
+
+		var item BoardItem
+		if err := json.Unmarshal(body, &item); err != nil {
+			continue
+		}
+		incomingCID := strings.TrimSpace(item.BoardMetaCID)
+		if incomingCID == "" || incomingCID == currentCID {
+			continue
+		}
+
+		incomingBM := item.Board
+		if strings.TrimSpace(incomingBM.BoardID) != boardID {
+			continue
+		}
+		if !bbslog.VerifyBoardMeta(&incomingBM) {
+			continue
+		}
+
+		accept, _, err := s.shouldAcceptBoardMetaUpdate(ctx, boardID, currentCID, currentBM, incomingCID, &incomingBM)
+		if err != nil {
+			log.Printf("client board sync failed boardId=%s base=%s: %v", boardID, baseURL, err)
+			continue
+		}
+		if !accept {
+			continue
+		}
+
+		if err := s.Boards.Upsert(boardID, incomingCID); err != nil {
+			log.Printf("client board sync save failed boardId=%s: %v", boardID, err)
+			return
+		}
+		s.markSeenBoardMetaCID(incomingCID)
+		return
+	}
 }
 
 func (s *Server) markSeenBoardMetaCID(boardMetaCID string) {
@@ -1291,7 +1443,10 @@ func parseLimitOffset(r *http.Request, defaultLimit, defaultOffset, maxLimit int
 
 func applyOffsetLimit[T any](in []T, offset, limit int) []T {
 	if offset >= len(in) {
-		return nil
+		if in == nil {
+			return []T{}
+		}
+		return in[:0]
 	}
 	end := offset + limit
 	if end > len(in) {

@@ -18,7 +18,7 @@ services:
       - "--autostart-flexipfs=true"
       - "--flexipfs-mdns=false"
     ports:
-      - "18080:18080"
+      - "${FULL_HTTP_PORT:-18080}:18080"
     volumes:
       - full-data:/data
     healthcheck:
@@ -44,7 +44,7 @@ services:
       - "--autostart-flexipfs=true"
       - "--flexipfs-mdns=false"
     ports:
-      - "28080:18080"
+      - "${CLIENT_HTTP_PORT:-28080}:18080"
     volumes:
       - client-data:/data
     healthcheck:

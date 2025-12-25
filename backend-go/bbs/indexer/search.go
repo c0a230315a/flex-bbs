@@ -34,10 +34,10 @@ type SearchBoardResult struct {
 }
 
 type SearchThreadsParams struct {
-	Query  string
+	Query   string
 	BoardID string
-	Limit  int
-	Offset int
+	Limit   int
+	Offset  int
 }
 
 type SearchThreadResult struct {
@@ -130,7 +130,7 @@ func (i *Indexer) SearchPosts(ctx context.Context, p SearchPostsParams) ([]Searc
 	}
 	defer rows.Close()
 
-	var out []SearchPostResult
+	out := make([]SearchPostResult, 0)
 	for rows.Next() {
 		var r SearchPostResult
 		var edited sql.NullString
