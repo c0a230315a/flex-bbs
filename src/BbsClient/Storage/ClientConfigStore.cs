@@ -51,6 +51,9 @@ public sealed record ClientConfig
     private const int DefaultFlexIpfsMdnsTimeoutSeconds = 10;
 
     public string BackendBaseUrl { get; init; } = "http://127.0.0.1:8080";
+    // Optional override for the managed backend listen address ("host:port").
+    // When unset/blank, bbs-node listens on the host:port implied by BackendBaseUrl (legacy behavior).
+    public string? BackendListenHostPort { get; init; }
     public string BackendRole { get; init; } = "indexer";
     public string UiLanguage { get; init; } = "auto";
     public string UiTimeZone { get; init; } = "jst";
@@ -68,6 +71,7 @@ public sealed record ClientConfig
     public ClientConfig Normalize()
     {
         var backendBaseUrl = string.IsNullOrWhiteSpace(BackendBaseUrl) ? "http://127.0.0.1:8080" : BackendBaseUrl.Trim();
+        var backendListenHostPort = string.IsNullOrWhiteSpace(BackendListenHostPort) ? null : BackendListenHostPort.Trim();
         var backendRole = NormalizeRole(BackendRole);
         var uiLanguage = NormalizeUiLanguage(UiLanguage);
         var uiTimeZone = NormalizeUiTimeZone(UiTimeZone);
@@ -82,6 +86,7 @@ public sealed record ClientConfig
         return this with
         {
             BackendBaseUrl = backendBaseUrl,
+            BackendListenHostPort = backendListenHostPort,
             BackendRole = backendRole,
             UiLanguage = uiLanguage,
             UiTimeZone = uiTimeZone,

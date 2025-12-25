@@ -1455,6 +1455,7 @@ public static class InteractiveUi
             AnsiConsole.Write(new Rule($"[bold]{ML("Settings")}[/]").LeftJustified());
             AnsiConsole.MarkupLine($"[grey]{ML("Config")}:[/] {Markup.Escape(configStore.ConfigPath)}");
             AnsiConsole.MarkupLine($"[grey]{ML("Backend")}:[/] {Markup.Escape(cfg.BackendBaseUrl)} [{(healthy ? "green" : "red")}]{ML(healthy ? "up" : "down")}[/]");
+            AnsiConsole.MarkupLine($"[grey]{ML("Backend listen (managed)")}:[/] {Markup.Escape(BbsNodeArgsBuilder.ResolveListenHostPort(cfg))}");
             AnsiConsole.MarkupLine($"[grey]{ML("Backend role (managed)")}:[/] {Markup.Escape(cfg.BackendRole)}");
             AnsiConsole.MarkupLine($"[grey]{ML("UI language")}:[/] {Markup.Escape(L(cfg.UiLanguage))}");
             AnsiConsole.MarkupLine($"[grey]{ML("Time zone")}:[/] {Markup.Escape(cfg.UiTimeZone.ToUpperInvariant())}");
@@ -1726,6 +1727,33 @@ public static class InteractiveUi
     private static ClientConfig PromptClientBackendSettings(ClientConfig cfg)
     {
         var backend = AnsiConsole.Ask(L("Backend base URL"), cfg.BackendBaseUrl);
+        var derivedListen = "";
+        try
+        {
+            var u = new Uri(backend);
+            derivedListen = $"{u.Host}:{u.Port}";
+        }
+        catch
+        {
+        }
+
+        var currentListen = string.IsNullOrWhiteSpace(cfg.BackendListenHostPort) ? derivedListen : cfg.BackendListenHostPort!;
+        var listenInput = AnsiConsole.Prompt(
+            new TextPrompt<string>(
+                    F(
+                        "Backend listen address (host:port, blank = derived) [grey](current: {0})[/]",
+                        EscapePrompt(string.IsNullOrWhiteSpace(currentListen) ? L("<empty>") : currentListen)
+                    )
+                )
+                .AllowEmpty()
+        );
+        var listen = string.IsNullOrWhiteSpace(listenInput) ? null : listenInput.Trim();
+        if (listen != null && derivedListen != "" && string.Equals(listen, derivedListen, StringComparison.OrdinalIgnoreCase))
+        {
+            // Keep config minimal; store null to mean "derive from Backend base URL".
+            listen = null;
+        }
+
         var roles = new[] { cfg.BackendRole, "client", "indexer", "archiver", "full" }
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -1747,6 +1775,7 @@ public static class InteractiveUi
         return cfg with
         {
             BackendBaseUrl = backend,
+            BackendListenHostPort = listen,
             BackendRole = backendRole,
             DataDir = dataDir,
             StartBackend = startBackend,
@@ -1807,6 +1836,31 @@ public static class InteractiveUi
             Pause();
             return oldCfg;
         }
+        if (newCfg.StartBackend)
+        {
+            var listenHostPort = BbsNodeArgsBuilder.ResolveListenHostPort(newCfg);
+            if (!TryValidateHostPort(listenHostPort, out var listenErr))
+            {
+                AnsiConsole.MarkupLine($"[red]{ML("Invalid backend listen address")}:[/] {Markup.Escape(listenErr)}");
+                Pause();
+                return oldCfg;
+            }
+            try
+            {
+                var backendUri = new Uri(newCfg.BackendBaseUrl);
+                var listenUri = new Uri("http://" + listenHostPort);
+                if (backendUri.Port != listenUri.Port)
+                {
+                    AnsiConsole.MarkupLine($"[red]{ML("Backend port mismatch")}:[/] {Markup.Escape($"{backendUri.Port} != {listenUri.Port}")}");
+                    Pause();
+                    return oldCfg;
+                }
+            }
+            catch
+            {
+                // ignore; validated above
+            }
+        }
         if (!TryValidateHttpUrl(newCfg.FlexIpfsBaseUrl, out var flexErr))
         {
             AnsiConsole.MarkupLine($"[red]{ML("Invalid Flexible-IPFS base URL")}:[/] {Markup.Escape(flexErr)}");
@@ -1844,6 +1898,7 @@ public static class InteractiveUi
 
         var restartNeeded =
             !string.Equals(oldCfg.BackendBaseUrl, newCfg.BackendBaseUrl, StringComparison.Ordinal) ||
+            !string.Equals(oldCfg.BackendListenHostPort, newCfg.BackendListenHostPort, StringComparison.Ordinal) ||
             !string.Equals(oldCfg.BackendRole, newCfg.BackendRole, StringComparison.Ordinal) ||
             !string.Equals(oldCfg.DataDir, newCfg.DataDir, StringComparison.Ordinal) ||
             !string.Equals(oldCfg.FlexIpfsBaseUrl, newCfg.FlexIpfsBaseUrl, StringComparison.Ordinal) ||
@@ -2348,6 +2403,53 @@ public static class InteractiveUi
         if (u.Scheme is not ("http" or "https"))
         {
             error = L("scheme must be http or https");
+            return false;
+        }
+        return true;
+    }
+
+    private static bool TryValidateHostPort(string hostPort, out string error)
+    {
+        error = "";
+        hostPort = hostPort.Trim();
+        if (string.IsNullOrWhiteSpace(hostPort))
+        {
+            error = L("host:port is empty");
+            return false;
+        }
+
+        // Require an explicit port.
+        if (hostPort.StartsWith("[", StringComparison.Ordinal))
+        {
+            if (!hostPort.Contains("]:", StringComparison.Ordinal))
+            {
+                error = L("IPv6 must be in [::1]:port form");
+                return false;
+            }
+        }
+        else
+        {
+            var idx = hostPort.LastIndexOf(':');
+            if (idx <= 0 || idx >= hostPort.Length - 1)
+            {
+                error = L("must be in host:port form");
+                return false;
+            }
+        }
+
+        if (!Uri.TryCreate("http://" + hostPort, UriKind.Absolute, out var u))
+        {
+            error = L("not a valid host:port");
+            return false;
+        }
+        if (string.IsNullOrWhiteSpace(u.Host))
+        {
+            error = L("host is empty");
+            return false;
+        }
+        if (u.Port is < 1 or > 65535)
+        {
+            error = L("port must be 1-65535");
             return false;
         }
         return true;

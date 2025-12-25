@@ -35,6 +35,7 @@ catch (Exception ex)
 }
 
 var backend = GetOption(args, "--backend") ?? persistedConfig.BackendBaseUrl;
+var backendListen = GetOption(args, "--backend-listen") ?? persistedConfig.BackendListenHostPort;
 var dataDir = GetOption(args, "--data-dir") ?? persistedConfig.DataDir;
 var startBackend = GetBoolOption(args, "--start-backend")
                    ?? (HasFlag(args, "--no-start-backend") ? false : persistedConfig.StartBackend);
@@ -52,6 +53,7 @@ var flexIpfsMdnsTimeoutSeconds = TryParseDurationSeconds(GetOption(args, "--flex
 var effectiveConfig = persistedConfig with
 {
     BackendBaseUrl = backend,
+    BackendListenHostPort = backendListen,
     DataDir = dataDir,
     StartBackend = startBackend,
     BbsNodePath = bbsNodePath,
@@ -71,7 +73,7 @@ bbsNodePath = effectiveConfig.BbsNodePath;
 AppLog.Init(dataDir);
 AppDomain.CurrentDomain.ProcessExit += (_, _) => AppLog.Close();
 AppLog.Info(
-    $"config backend={backend} role={effectiveConfig.BackendRole} dataDir={dataDir} startBackend={startBackend} bbsNodePath={(bbsNodePath ?? "<auto>")} flexBaseUrl={effectiveConfig.FlexIpfsBaseUrl} autostartFlex={effectiveConfig.AutostartFlexIpfs} mdns={effectiveConfig.FlexIpfsMdns} mdnsTimeout={effectiveConfig.FlexIpfsMdnsTimeoutSeconds}s gwOverride={(string.IsNullOrWhiteSpace(effectiveConfig.FlexIpfsGwEndpoint) ? "<none>" : effectiveConfig.FlexIpfsGwEndpoint)}"
+    $"config backend={backend} listen={BbsNodeArgsBuilder.ResolveListenHostPort(effectiveConfig)} role={effectiveConfig.BackendRole} dataDir={dataDir} startBackend={startBackend} bbsNodePath={(bbsNodePath ?? "<auto>")} flexBaseUrl={effectiveConfig.FlexIpfsBaseUrl} autostartFlex={effectiveConfig.AutostartFlexIpfs} mdns={effectiveConfig.FlexIpfsMdns} mdnsTimeout={effectiveConfig.FlexIpfsMdnsTimeoutSeconds}s gwOverride={(string.IsNullOrWhiteSpace(effectiveConfig.FlexIpfsGwEndpoint) ? "<none>" : effectiveConfig.FlexIpfsGwEndpoint)}"
 );
 
 using var launcher = new BackendLauncher();
@@ -526,7 +528,7 @@ static int FindCommandIndex(string[] args)
 
 static bool OptionTakesValue(string name)
 {
-    return name is "--backend" or "--data-dir" or "--bbs-node-path"
+    return name is "--backend" or "--backend-listen" or "--data-dir" or "--bbs-node-path"
         or "--flexipfs-base-url" or "--flexipfs-base-dir" or "--flexipfs-gw-endpoint" or "--flexipfs-mdns-timeout";
 }
 
@@ -560,6 +562,7 @@ static void PrintHelp()
     Console.WriteLine();
     Console.WriteLine("Global options:");
     Console.WriteLine("  --backend <url>      (default: http://127.0.0.1:8080)");
+    Console.WriteLine("  --backend-listen <host:port>  (default: derived from --backend; e.g. 0.0.0.0:8080)");
     Console.WriteLine("  --data-dir <path>    (default: OS app data dir)");
     Console.WriteLine("  --start-backend      (default: true; start bbs-node if not running)");
     Console.WriteLine("  --no-start-backend   (disable auto-start)");

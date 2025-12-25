@@ -4,12 +4,20 @@ namespace BbsClient.Util;
 
 public static class BbsNodeArgsBuilder
 {
-    public static string[] Build(ClientConfig cfg)
+    public static string ResolveListenHostPort(ClientConfig cfg)
     {
         cfg = cfg.Normalize();
 
         var uri = new Uri(cfg.BackendBaseUrl);
-        var hostPort = $"{uri.Host}:{uri.Port}";
+        var derived = $"{uri.Host}:{uri.Port}";
+        return string.IsNullOrWhiteSpace(cfg.BackendListenHostPort) ? derived : cfg.BackendListenHostPort.Trim();
+    }
+
+    public static string[] Build(ClientConfig cfg)
+    {
+        cfg = cfg.Normalize();
+
+        var hostPort = ResolveListenHostPort(cfg);
 
         var args = new List<string>
         {

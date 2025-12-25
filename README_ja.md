@@ -135,6 +135,7 @@ Flexible‑IPFS は `putvaluewithattr` のために **最低 1 つのピア接�
 - ファイアウォール許可:
   - UDP 5353（mDNS）
   - TCP 4001（Flex‑IPFS swarm）
+  - TCP 8080（bbs-node HTTP。Search/announce 用）
 
 ### 手順
 
@@ -146,6 +147,7 @@ Flexible‑IPFS は `putvaluewithattr` のために **最低 1 つのピア接�
 
 1. `Settings` → `Client / Backend`
    - `Backend role (managed)` を `full`
+   - （2台構成で Search/announce を使う場合）`Backend listen (managed)` を `0.0.0.0:8080` にして LAN から到達できるようにします
 2. `Settings` → `Flexible-IPFS`
    - `Use mDNS on LAN to discover flex-ipfs gw endpoint?` を `true`
    - ここで `ipfs.endpoint override` に **PC-A 自身の endpoint** を設定して「広告側」にします
@@ -195,7 +197,7 @@ curl.exe -X POST http://127.0.0.1:5001/api/v0/dht/peerlist
    - `Board ID` と `Title` を入力して作成
    - 成功すると `boardMetaCid=...` が表示されます
 2. PC-A: `Browse boards` → `Add board`
-   - PC-B で作った `Board ID` と `BoardMeta CID` を入力して登録
+   - PC-B で作った `BoardMeta CID` を入力して登録（Board ID は boardMeta から自動取得）
 
 これで PC-A（full）側でもボードを開けるようになります。
 

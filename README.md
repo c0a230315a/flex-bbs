@@ -116,6 +116,8 @@ Note: `Search posts` requires backend role `indexer` or `full`.
 
 Flexible‑IPFS needs at least 1 peer connection (see `dht/peerlist`). On a LAN, you can connect peers either by configuring `ipfs.endpoint` manually, or by using mDNS.
 
+Note: if you want `client` nodes to use `Search` (proxy) and auto-announce board updates to an `indexer`/`full` node, the `indexer`/`full` node’s HTTP API must be reachable from the LAN (default port: 8080). Run `bbs-node` with `--http 0.0.0.0:8080` (or set the client UI’s backend listen setting) and allow TCP 8080 through the firewall.
+
 1. Start one node as `indexer` or `full` on Machine A.
 2. On Machine A, get the PeerID:
    - `curl -X POST http://127.0.0.1:5001/api/v0/id` (look for `ID`)
@@ -147,12 +149,13 @@ Flexible‑IPFS needs at least 1 peer connection. If `dht/peerlist` returns `""`
 
 - PC-A runs `full`, PC-B runs `client`
 - Same LAN
-- Firewall allows UDP 5353 (mDNS) and TCP 4001 (Flex‑IPFS swarm)
+- Firewall allows UDP 5353 (mDNS), TCP 4001 (Flex‑IPFS swarm), and TCP 8080 (bbs-node HTTP)
 
 **Steps**
 
 1. On both PCs, extract the Windows bundle and launch `bbs-client.exe`.
 2. On PC-A: `Settings` → `Client / Backend` → set `Backend role (managed)` to `full`.
+   - If using 2 PCs and you want `Search`/auto-announce to work: set the backend listen address to `0.0.0.0:8080`.
 3. On PC-A: compute your endpoint and set it in `Settings` → `Flexible-IPFS`:
    - Enable `Use mDNS...`
    - Set `ipfs.endpoint override` to your own endpoint (`/ip4/<A_LAN_IP>/tcp/4001/ipfs/<PeerID>`)
@@ -165,7 +168,7 @@ Flexible‑IPFS needs at least 1 peer connection. If `dht/peerlist` returns `""`
    - Leave `ipfs.endpoint override` empty
 5. Create and share a board:
    - PC-B: `Browse boards` → `Create board` → note `boardMetaCid=...`
-   - PC-A: `Browse boards` → `Add board` → input `Board ID` + `BoardMeta CID`
+   - PC-A: `Browse boards` → `Add board` → input `BoardMeta CID` (Board ID is read from the board meta)
 
 Note: boards are registered locally (`boards.json`), so sharing requires `Add board` on the other machine.
 

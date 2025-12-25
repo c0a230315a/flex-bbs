@@ -433,14 +433,12 @@ func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
 	if strings.ContainsAny(endpoint, "\r\n") {
 		return fmt.Errorf("FLEXIPFS_GW_ENDPOINT must be a single line")
 	}
-	// When the override points to ourselves, it's typically provided for mDNS advertising (not bootstrapping).
-	// However, Flexible-IPFS crashes when `ipfs.endpoint` is empty, so ensure we still set a non-empty
-	// endpoint in that case to keep single-node (first node) flows working.
-	if isSelfGWEndpoint(endpoint) {
-		if current, _ := readKadrttGWEndpoint(flexBaseDir); strings.TrimSpace(current) != "" {
-			log.Printf("flex-ipfs: skip ipfs.endpoint override (self endpoint): %s", endpoint)
-			return nil
-		}
+	// If the user provided a gw endpoint override, apply it even when it points to ourselves.
+	// Bundled `kadrtt.properties` often contains a stale/private bootstrap endpoint; keeping it can
+	// leave the peer list empty and break core flows (Create/Add board) when Flexible-IPFS is already running.
+	if current, _ := readKadrttGWEndpoint(flexBaseDir); strings.TrimSpace(current) == endpoint {
+		log.Printf("flex-ipfs: skip ipfs.endpoint override (already set): %s", endpoint)
+		return nil
 	}
 
 	propsPath := filepath.Join(flexBaseDir, "kadrtt.properties")
