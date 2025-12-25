@@ -433,9 +433,14 @@ func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
 	if strings.ContainsAny(endpoint, "\r\n") {
 		return fmt.Errorf("FLEXIPFS_GW_ENDPOINT must be a single line")
 	}
+	// When the override points to ourselves, it's typically provided for mDNS advertising (not bootstrapping).
+	// However, Flexible-IPFS crashes when `ipfs.endpoint` is empty, so ensure we still set a non-empty
+	// endpoint in that case to keep single-node (first node) flows working.
 	if isSelfGWEndpoint(endpoint) {
-		log.Printf("flex-ipfs: skip ipfs.endpoint override (self endpoint): %s", endpoint)
-		return nil
+		if current, _ := readKadrttGWEndpoint(flexBaseDir); strings.TrimSpace(current) != "" {
+			log.Printf("flex-ipfs: skip ipfs.endpoint override (self endpoint): %s", endpoint)
+			return nil
+		}
 	}
 
 	propsPath := filepath.Join(flexBaseDir, "kadrtt.properties")
@@ -620,10 +625,6 @@ func ensureKadrttGlobalIP(flexBaseDir, gwEndpointOverride string) error {
 func syncFlexIPFSBootstrapConfig(flexBaseDir, gwEndpointOverride string) error {
 	desired := strings.TrimSpace(resolveFlexIPFSConnectEndpoint(flexBaseDir, gwEndpointOverride))
 	if desired == "" {
-		// Avoid bootstrapping to ourselves when a full node config uses its own endpoint for mDNS advertising.
-		if self := strings.TrimSpace(gwEndpointOverride); self != "" && isSelfGWEndpoint(self) {
-			return removeFlexIPFSBootstrapEntry(flexBaseDir, self)
-		}
 		return nil
 	}
 
@@ -781,14 +782,17 @@ func tryAcquireFlexIPFSStartLock(lockPath string) (release func(), acquired bool
 
 func resolveFlexIPFSConnectEndpoint(baseDirOrOverride string, gwEndpointOverride string) string {
 	if v := strings.TrimSpace(gwEndpointOverride); v != "" {
+		// If the gw endpoint is explicitly set to ourselves, treat it as an advertisement-only hint and
+		// fall back to the configured ipfs.endpoint for actual bootstrapping.
 		if isSelfGWEndpoint(v) {
-			return ""
+			goto fromConfig
 		}
 		return v
 	}
 
 	// Allow manual edits in flexible-ipfs-base/kadrtt.properties to work without requiring
 	// passing --flexipfs-gw-endpoint every time.
+fromConfig:
 	baseDir := strings.TrimSpace(baseDirOrOverride)
 	if baseDir == "" || !dirExists(baseDir) {
 		if bd, _, err := resolveFlexDirs(baseDirOrOverride); err == nil && bd != "" {
@@ -799,9 +803,6 @@ func resolveFlexIPFSConnectEndpoint(baseDirOrOverride string, gwEndpointOverride
 		return ""
 	}
 	if v, err := readKadrttGWEndpoint(baseDir); err == nil {
-		if isSelfGWEndpoint(v) {
-			return ""
-		}
 		return v
 	}
 	return ""
