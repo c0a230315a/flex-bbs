@@ -135,6 +135,9 @@ func main() {
 	if err := trustedIndexers.Load(); err != nil {
 		log.Printf("trusted indexers load error: %v", err)
 	}
+	if !flexGWExplicit {
+		maybeTrustIndexerFromFlexIPFSGWMdns(ctx, trustedIndexers, flexGWEndpoint)
+	}
 
 	flex := flexipfs.New(*flexIPFSBase)
 	if isLocalBaseURL(*flexIPFSBase) {
@@ -197,6 +200,68 @@ func defaultDataDir() string {
 
 func defaultTrustedIndexersPath(dataDir string) string {
 	return filepath.Join(dataDir, "trusted_indexers.json")
+}
+
+func maybeTrustIndexerFromFlexIPFSGWMdns(ctx context.Context, trusted *config.TrustedIndexersStore, gwEndpoint string) {
+	if trusted == nil {
+		return
+	}
+	gwEndpoint = strings.TrimSpace(gwEndpoint)
+	if gwEndpoint == "" {
+		return
+	}
+
+	ip := extractIP4FromMultiaddr(gwEndpoint)
+	if ip == "" {
+		return
+	}
+
+	// Convention: bbs-node HTTP is typically exposed on 8080 on the same host as the advertised flex-ipfs gw endpoint.
+	// When the gw endpoint was discovered via mDNS, treat that host as a trust anchor automatically.
+	baseURL := fmt.Sprintf("http://%s:8080", ip)
+
+	// Best-effort: avoid trusting obviously non-indexer peers, but keep behavior non-fatal.
+	role, err := fetchBbsNodeRole(ctx, baseURL)
+	if err == nil && role != "indexer" && role != "full" {
+		return
+	}
+
+	if changed, err := trusted.Add(baseURL); err != nil {
+		log.Printf("trusted indexers auto-add failed: %v", err)
+	} else if changed {
+		log.Printf("trusted indexers: auto-added (mdns gw bootstrap) %s", baseURL)
+	}
+}
+
+func fetchBbsNodeRole(ctx context.Context, baseURL string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	endpoint := strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/healthz"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("healthz http %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+
+	s := strings.TrimSpace(string(b))
+	const prefix = "ok role="
+	if !strings.HasPrefix(s, prefix) {
+		return "", fmt.Errorf("unexpected healthz response: %q", s)
+	}
+	return strings.TrimSpace(strings.TrimPrefix(s, prefix)), nil
 }
 
 func runGenKey(args []string) int {
