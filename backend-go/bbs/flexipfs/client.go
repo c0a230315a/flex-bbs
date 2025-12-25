@@ -21,6 +21,11 @@ type Client struct {
 	BaseURL    string
 	BaseDir    string
 	HTTPClient *http.Client
+
+	// GetValueNotFoundRetryWindow controls how long GetValue should keep retrying when
+	// Flexible-IPFS returns "Not Found" with HTTP 200 (often transient during peer discovery).
+	// Set to 0 to disable retries.
+	GetValueNotFoundRetryWindow time.Duration
 }
 
 func New(baseURL string) *Client {
@@ -29,6 +34,7 @@ func New(baseURL string) *Client {
 		HTTPClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},
+		GetValueNotFoundRetryWindow: 15 * time.Second,
 	}
 }
 
@@ -250,6 +256,76 @@ func (c *Client) getValueFromAPI(ctx context.Context, cid string, allowCacheDuri
 	}
 
 	v := unwrapValue(body)
+	if isNotFoundValue(v) {
+		retryWindow := c.GetValueNotFoundRetryWindow
+		if retryWindow > 0 {
+			pollUntil := time.Now().Add(retryWindow)
+			if dl, ok := ctx.Deadline(); ok && dl.Before(pollUntil) {
+				pollUntil = dl
+			}
+			sleep := 50 * time.Millisecond
+			for {
+				if allowCacheDuringPolling {
+					if b, err := c.readGetDataValue(cid); err == nil {
+						return b, nil
+					}
+				}
+
+				if time.Now().After(pollUntil) {
+					break
+				}
+
+				wait := sleep
+				if remaining := time.Until(pollUntil); remaining < wait {
+					wait = remaining
+				}
+				if wait > 0 {
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-time.After(wait):
+					}
+				}
+
+				sleep += 50 * time.Millisecond
+				if sleep > 500*time.Millisecond {
+					sleep = 500 * time.Millisecond
+				}
+
+				q2 := url.Values{}
+				q2.Set("cid", cid)
+				rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				body2, status2, header2, trailer2, err := c.postQuery(rctx, "/dht/getvalue", q2)
+				cancel()
+				if err != nil {
+					continue
+				}
+				if status2 < 200 || status2 >= 300 {
+					return nil, httpError(status2, body2, header2, trailer2)
+				}
+				v2 := unwrapValue(body2)
+				if isNotFoundValue(v2) {
+					continue
+				}
+				if isDownloadingPlaceholder(v2, cid) {
+					v = v2
+					break
+				}
+				_ = c.writeGetDataValue(cid, v2)
+				return v2, nil
+			}
+		}
+
+		if isNotFoundValue(v) {
+			peerCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			peers, perr := c.PeerList(peerCtx)
+			cancel()
+			if perr == nil && strings.TrimSpace(peers) == "" {
+				return nil, fmt.Errorf("flexipfs getvalue cid=%s: not found (peerlist is empty). Configure a gw endpoint via FLEXIPFS_GW_ENDPOINT / --flexipfs-gw-endpoint or enable --flexipfs-mdns: %w", cid, os.ErrNotExist)
+			}
+			return nil, fmt.Errorf("flexipfs getvalue cid=%s: %w", cid, os.ErrNotExist)
+		}
+	}
 	if isDownloadingPlaceholder(v, cid) {
 		// Flexible-IPFS returns a placeholder string and downloads content to <baseDir>/getdata/<cid>.txt asynchronously.
 		// Prefer the local file when we have access to the base directory, but also retry /getvalue in case the caller
@@ -271,18 +347,21 @@ func (c *Client) getValueFromAPI(ctx context.Context, cid string, allowCacheDuri
 			q2 := url.Values{}
 			q2.Set("cid", cid)
 			rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			body2, status2, header2, trailer2, err := c.postQuery(rctx, "/dht/getvalue", q2)
-			cancel()
-			if err == nil {
-				if status2 < 200 || status2 >= 300 {
-					return nil, httpError(status2, body2, header2, trailer2)
-				}
-				v2 := unwrapValue(body2)
-				if !isDownloadingPlaceholder(v2, cid) {
-					_ = c.writeGetDataValue(cid, v2)
-					return v2, nil
-				}
-				if s := strings.TrimSpace(string(v2)); s != "" {
+				body2, status2, header2, trailer2, err := c.postQuery(rctx, "/dht/getvalue", q2)
+				cancel()
+				if err == nil {
+					if status2 < 200 || status2 >= 300 {
+						return nil, httpError(status2, body2, header2, trailer2)
+					}
+					v2 := unwrapValue(body2)
+					if isNotFoundValue(v2) {
+						continue
+					}
+					if !isDownloadingPlaceholder(v2, cid) {
+						_ = c.writeGetDataValue(cid, v2)
+						return v2, nil
+					}
+					if s := strings.TrimSpace(string(v2)); s != "" {
 					lastPlaceholder = s
 				}
 			}
@@ -676,6 +755,14 @@ func isDownloadingPlaceholder(v []byte, cid string) bool {
 	return strings.HasPrefix(s, "Downloading chunks for CID:") && strings.Contains(s, cid)
 }
 
+func isNotFoundValue(v []byte) bool {
+	s := strings.TrimSpace(string(v))
+	if s == "" {
+		return false
+	}
+	return strings.EqualFold(s, "not found")
+}
+
 func decodeGetDataValue(b []byte) []byte {
 	b = bytes.TrimRight(b, "\r\n")
 	if len(b) < 2 {
@@ -741,17 +828,23 @@ func (c *Client) readGetDataValue(cid string) ([]byte, error) {
 	}
 
 	var firstErr error
-	for _, dir := range uniqStrings(dataDirs) {
-		p := filepath.Join(dir, cid+".txt")
-		b, err := os.ReadFile(p)
-		if err == nil {
-			b = decodeGetDataValue(b)
-			if len(b) != 0 {
-				return b, nil
+		for _, dir := range uniqStrings(dataDirs) {
+			p := filepath.Join(dir, cid+".txt")
+			b, err := os.ReadFile(p)
+			if err == nil {
+				b = decodeGetDataValue(b)
+				if len(b) != 0 {
+					if isNotFoundValue(b) {
+						// Flexible-IPFS can write "Not Found" to getdata and then refuse to overwrite it.
+						// Treat that as a cache miss and try to clean it up best-effort.
+						_ = os.Remove(p)
+						continue
+					}
+					return b, nil
+				}
+				continue
 			}
-			continue
-		}
-		if firstErr == nil && !errors.Is(err, os.ErrNotExist) {
+			if firstErr == nil && !errors.Is(err, os.ErrNotExist) {
 			firstErr = err
 		}
 
@@ -765,24 +858,24 @@ func (c *Client) readGetDataValue(cid string) ([]byte, error) {
 			continue
 		}
 		sort.Strings(matches)
-		for _, p := range matches {
-			if strings.HasSuffix(p, ".txt") {
-				continue
-			}
-			b, err := os.ReadFile(p)
-			if err != nil {
-				if firstErr == nil && !errors.Is(err, os.ErrNotExist) {
-					firstErr = err
+			for _, p := range matches {
+				if strings.HasSuffix(p, ".txt") {
+					continue
 				}
-				continue
+				b, err := os.ReadFile(p)
+				if err != nil {
+					if firstErr == nil && !errors.Is(err, os.ErrNotExist) {
+						firstErr = err
+					}
+					continue
+				}
+				b = decodeGetDataValue(b)
+				if len(b) == 0 || isNotFoundValue(b) {
+					continue
+				}
+				return b, nil
 			}
-			b = decodeGetDataValue(b)
-			if len(b) == 0 {
-				continue
-			}
-			return b, nil
 		}
-	}
 	if firstErr != nil {
 		return nil, firstErr
 	}

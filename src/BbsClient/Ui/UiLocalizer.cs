@@ -259,6 +259,7 @@ public sealed class UiLocalizer
         ["edited"] = "編集",
         ["tombstoned"] = "削除済み",
 
+        ["Board isn't registered locally. Add board and open?"] = "この板はローカルに登録されていません。追加して開きますか？",
         ["Register this board locally (boards.json)?"] = "この板をローカル（boards.json）に登録しますか？",
         ["Registering board..."] = "板を登録しています...",
         ["Create this board and register it locally (boards.json)?"] = "この板を作成してローカル（boards.json）に登録しますか？",

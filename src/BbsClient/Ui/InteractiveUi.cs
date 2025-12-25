@@ -93,7 +93,7 @@ public static class InteractiveUi
                         await BrowseBoardsAsync(api, cfg, keys, blocked, ct);
                         break;
                     case "Search":
-                        await SearchAsync(api, keys, blocked, ct);
+                        await SearchAsync(api, cfg, keys, blocked, ct);
                         break;
                     case "Keys":
                         await KeysMenuAsync(keys, ct);
@@ -821,7 +821,7 @@ public static class InteractiveUi
         }
     }
 
-    private static async Task SearchAsync(BbsApiClient api, KeyStore keys, BlockedStore blocked, CancellationToken ct)
+    private static async Task SearchAsync(BbsApiClient api, ClientConfig cfg, KeyStore keys, BlockedStore blocked, CancellationToken ct)
     {
         var q = AnsiConsole.Ask<string>(L("Query (q)"));
         var boardId = EmptyToNull(AnsiConsole.Ask(L("Board ID (optional)"), ""));
@@ -963,6 +963,10 @@ public static class InteractiveUi
                         break;
                     }
 
+                    if (!await EnsureBoardRegisteredAsync(api, cfg, selected.Board.BoardId, selected.BoardMetaCid, ct))
+                    {
+                        break;
+                    }
                     await BrowseThreadsAsync(api, keys, blocked, selected.Board.BoardId, selected.Board.Title, ct);
                     break;
                 }
@@ -986,6 +990,11 @@ public static class InteractiveUi
                         break;
                     }
 
+                    var metaCid = boards.FirstOrDefault(b => string.Equals(b.Board.BoardId, selected.Thread.BoardId, StringComparison.OrdinalIgnoreCase))?.BoardMetaCid;
+                    if (!await EnsureBoardRegisteredAsync(api, cfg, selected.Thread.BoardId, metaCid, ct))
+                    {
+                        break;
+                    }
                     await BrowseThreadAsync(api, keys, blocked, selected.ThreadId, ct);
                     break;
                 }
@@ -1009,6 +1018,11 @@ public static class InteractiveUi
                         break;
                     }
 
+                    var metaCid = boards.FirstOrDefault(b => string.Equals(b.Board.BoardId, selected.BoardId, StringComparison.OrdinalIgnoreCase))?.BoardMetaCid;
+                    if (!await EnsureBoardRegisteredAsync(api, cfg, selected.BoardId, metaCid, ct))
+                    {
+                        break;
+                    }
                     await BrowseThreadAsync(api, keys, blocked, selected.ThreadId, ct);
                     break;
                 }
@@ -1049,6 +1063,137 @@ public static class InteractiveUi
                     return;
             }
         }
+    }
+
+    private static async Task<bool> EnsureBoardRegisteredAsync(
+        BbsApiClient api,
+        ClientConfig cfg,
+        string boardId,
+        string? boardMetaCid,
+        CancellationToken ct
+    )
+    {
+        try
+        {
+            _ = await api.GetBoardAsync(boardId, ct);
+            return true;
+        }
+        catch (Exception ex) when (TryParseHttpStatusCode(ex, out var code) && code == 404)
+        {
+            if (!AnsiConsole.Confirm(L("Board isn't registered locally. Add board and open?"), true))
+            {
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(boardMetaCid))
+            {
+                try
+                {
+                    var hits = await api.SearchBoardsAsync(boardId, 10, 0, ct);
+                    boardMetaCid = hits
+                        .FirstOrDefault(b => string.Equals(b.Board.BoardId, boardId, StringComparison.OrdinalIgnoreCase))
+                        ?.BoardMetaCid;
+                }
+                catch
+                {
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(boardMetaCid))
+            {
+                AnsiConsole.MarkupLine($"[grey]{ML("BoardID")}:[/] {Markup.Escape(boardId)}");
+                boardMetaCid = EmptyToNull(AnsiConsole.Ask(L("BoardMeta CID"), ""));
+            }
+
+            if (boardMetaCid == null)
+            {
+                AnsiConsole.MarkupLine($"[yellow]{ML("BoardMeta CID is empty. Canceled.")}[/]");
+                Pause();
+                return false;
+            }
+
+            if (!await TryAddBoardAsync(cfg, boardMetaCid, ct))
+            {
+                return false;
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex);
+            Pause();
+            return false;
+        }
+    }
+
+    private static async Task<bool> TryAddBoardAsync(ClientConfig cfg, string boardMetaCid, CancellationToken ct)
+    {
+        var bbsNodePath = cfg.BbsNodePath ?? BbsNodePathResolver.Resolve();
+        if (string.IsNullOrWhiteSpace(bbsNodePath))
+        {
+            AnsiConsole.MarkupLine($"[red]{ML("bbs-node not found.")}[/] {ML("Set it in Settings → Client / Backend.")}");
+            Pause();
+            return false;
+        }
+
+        var args = new List<string>
+        {
+            "add-board",
+            "--board-meta-cid", boardMetaCid,
+            "--flexipfs-base-url", cfg.FlexIpfsBaseUrl,
+            $"--autostart-flexipfs={cfg.AutostartFlexIpfs.ToString().ToLowerInvariant()}",
+            $"--flexipfs-mdns={cfg.FlexIpfsMdns.ToString().ToLowerInvariant()}",
+            "--flexipfs-mdns-timeout", $"{cfg.FlexIpfsMdnsTimeoutSeconds}s",
+            "--data-dir", cfg.DataDir,
+        };
+        if (!string.IsNullOrWhiteSpace(cfg.FlexIpfsBaseDir))
+        {
+            args.Add("--flexipfs-base-dir");
+            args.Add(cfg.FlexIpfsBaseDir);
+        }
+        if (!string.IsNullOrWhiteSpace(cfg.FlexIpfsGwEndpoint))
+        {
+            args.Add("--flexipfs-gw-endpoint");
+            args.Add(cfg.FlexIpfsGwEndpoint);
+        }
+
+        try
+        {
+            _ = await AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .StartAsync(L("Registering board..."), async _ => await RunProcessCaptureAsync(bbsNodePath, args, ct));
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex);
+            Pause();
+            return false;
+        }
+    }
+
+    private static bool TryParseHttpStatusCode(Exception ex, out int statusCode)
+    {
+        statusCode = 0;
+        if (ex is not HttpRequestException hre)
+        {
+            return false;
+        }
+
+        const string prefix = "HTTP ";
+        if (!hre.Message.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var rest = hre.Message[prefix.Length..];
+        var i = rest.IndexOf(':');
+        if (i <= 0)
+        {
+            return false;
+        }
+
+        return int.TryParse(rest[..i], NumberStyles.None, CultureInfo.InvariantCulture, out statusCode);
     }
 
     private static async Task KeysMenuAsync(KeyStore keys, CancellationToken ct)
