@@ -4,6 +4,7 @@ using BbsClient.Util;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using Spectre.Console;
 
 namespace BbsClient.Ui;
@@ -1471,7 +1472,7 @@ public static class InteractiveUi
             var choice = AnsiConsole.Prompt(
                 new SelectionPrompt<string>()
                     .Title(L("Settings menu"))
-                    .AddChoices("Client / Backend", "Flexible-IPFS", "Language", "Time zone", "kadrtt.properties", "Backend control", "Back")
+                    .AddChoices("Client / Backend", "Flexible-IPFS", "Trusted indexers", "Language", "Time zone", "kadrtt.properties", "Backend control", "Back")
                     .UseConverter(L)
             );
 
@@ -1489,6 +1490,9 @@ public static class InteractiveUi
                     cfg = await ApplyConfigAsync(configStore, launcher, cfg, updated, ct);
                     break;
                 }
+                case "Trusted indexers":
+                    await TrustedIndexersMenuAsync(cfg, ct);
+                    break;
                 case "Language":
                 {
                     var langs = new[] { cfg.UiLanguage, "auto", "en", "ja" }
@@ -1538,6 +1542,183 @@ public static class InteractiveUi
                     break;
                 case "Back":
                     return cfg;
+            }
+        }
+    }
+
+    private static async Task TrustedIndexersMenuAsync(ClientConfig cfg, CancellationToken ct)
+    {
+        cfg = cfg.Normalize();
+
+        var bbsNodePath = cfg.BbsNodePath ?? BbsNodePathResolver.Resolve();
+        if (string.IsNullOrWhiteSpace(bbsNodePath))
+        {
+            AnsiConsole.MarkupLine($"[red]{ML("bbs-node not found.")}[/] {ML("Set it in Settings → Client / Backend.")}");
+            Pause();
+            return;
+        }
+
+        while (true)
+        {
+            List<string> indexers;
+            try
+            {
+                var output = await RunProcessCaptureAsync(
+                    bbsNodePath,
+                    new[] { "list-trusted-indexers", "--data-dir", cfg.DataDir },
+                    ct
+                );
+                indexers = JsonSerializer.Deserialize<List<string>>(output.StdOut.Trim()) ?? [];
+            }
+            catch (Exception ex)
+            {
+                ShowError(ex);
+                Pause();
+                indexers = [];
+            }
+
+            AnsiConsole.Clear();
+            AnsiConsole.Write(new Rule($"[bold]{ML("Trusted indexers")}[/]").LeftJustified());
+            AnsiConsole.MarkupLine($"[grey]{ML("Data dir")}:[/] {Markup.Escape(cfg.DataDir)}");
+            AnsiConsole.WriteLine();
+
+            var table = new Table().Border(TableBorder.Rounded);
+            table.Expand = true;
+            table.AddColumn("#");
+            table.AddColumn(L("Base URL"));
+            if (indexers.Count == 0)
+            {
+                table.AddRow("-", $"[grey]{ML("<none>")}[/]");
+            }
+            else
+            {
+                for (var i = 0; i < indexers.Count; i++)
+                {
+                    table.AddRow($"{i + 1}", Markup.Escape(indexers[i]));
+                }
+            }
+            AnsiConsole.Write(table);
+            AnsiConsole.WriteLine();
+
+            var action = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title(L("Action"))
+                    .AddChoices("Add", "Remove", "Import from bootstrap", "Refresh", "Back")
+                    .UseConverter(L)
+            );
+
+            switch (action)
+            {
+                case "Add":
+                {
+                    var url = AnsiConsole.Ask<string>(L("Indexer base URL"));
+                    if (string.IsNullOrWhiteSpace(url))
+                    {
+                        break;
+                    }
+                    url = url.Trim();
+
+                    if (!TryValidateHttpUrl(url, out var err))
+                    {
+                        AnsiConsole.MarkupLine($"[red]{ML("Invalid backend URL")}:[/] {Markup.Escape(err)}");
+                        Pause();
+                        break;
+                    }
+
+                    try
+                    {
+                        var output = await RunProcessCaptureAsync(
+                            bbsNodePath,
+                            new[] { "add-trusted-indexer", "--base-url", url, "--data-dir", cfg.DataDir },
+                            ct
+                        );
+                        var msg = output.StdOut.Trim();
+                        AnsiConsole.MarkupLine(msg == "" ? "[green]ok[/]" : $"[green]{Markup.Escape(msg)}[/]");
+                    }
+                    catch (Exception ex)
+                    {
+                        ShowError(ex);
+                    }
+                    Pause();
+                    break;
+                }
+                case "Remove":
+                {
+                    if (indexers.Count == 0)
+                    {
+                        AnsiConsole.MarkupLine($"[grey]{ML("No results to select.")}[/]");
+                        Pause();
+                        break;
+                    }
+                    var selected = PromptWithBack(
+                        L("Select trusted indexer"),
+                        indexers,
+                        Markup.Escape,
+                        moreChoicesText: $"[grey]{ML("(move up and down to reveal more)")}[/]"
+                    );
+                    if (selected == null)
+                    {
+                        break;
+                    }
+                    if (!AnsiConsole.Confirm(F("Remove '{0}'?", selected), false))
+                    {
+                        break;
+                    }
+
+                    try
+                    {
+                        var output = await RunProcessCaptureAsync(
+                            bbsNodePath,
+                            new[] { "remove-trusted-indexer", "--base-url", selected, "--data-dir", cfg.DataDir },
+                            ct
+                        );
+                        var msg = output.StdOut.Trim();
+                        AnsiConsole.MarkupLine(msg == "" ? "[green]ok[/]" : $"[green]{Markup.Escape(msg)}[/]");
+                    }
+                    catch (Exception ex)
+                    {
+                        ShowError(ex);
+                    }
+                    Pause();
+                    break;
+                }
+                case "Import from bootstrap":
+                {
+                    var url = AnsiConsole.Ask<string>(L("Bootstrap indexer base URL"));
+                    if (string.IsNullOrWhiteSpace(url))
+                    {
+                        break;
+                    }
+                    url = url.Trim();
+
+                    if (!TryValidateHttpUrl(url, out var err))
+                    {
+                        AnsiConsole.MarkupLine($"[red]{ML("Invalid backend URL")}:[/] {Markup.Escape(err)}");
+                        Pause();
+                        break;
+                    }
+
+                    try
+                    {
+                        var output = await RunProcessCaptureAsync(
+                            bbsNodePath,
+                            new[] { "sync-trusted-indexers", "--bootstrap-url", url, "--data-dir", cfg.DataDir },
+                            ct
+                        );
+                        var msg = output.StdOut.Trim();
+                        AnsiConsole.MarkupLine(msg == "" ? "[green]ok[/]" : $"[green]{Markup.Escape(msg)}[/]");
+                    }
+                    catch (Exception ex)
+                    {
+                        ShowError(ex);
+                    }
+                    Pause();
+                    break;
+                }
+                case "Refresh":
+                    break;
+                case "Back":
+                    return;
             }
         }
     }

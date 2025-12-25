@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -52,6 +54,14 @@ func main() {
 			os.Exit(runInitBoard(os.Args[2:]))
 		case "add-board":
 			os.Exit(runAddBoard(os.Args[2:]))
+		case "list-trusted-indexers":
+			os.Exit(runListTrustedIndexers(os.Args[2:]))
+		case "add-trusted-indexer":
+			os.Exit(runAddTrustedIndexer(os.Args[2:]))
+		case "remove-trusted-indexer":
+			os.Exit(runRemoveTrustedIndexer(os.Args[2:]))
+		case "sync-trusted-indexers":
+			os.Exit(runSyncTrustedIndexers(os.Args[2:]))
 		}
 	}
 
@@ -121,6 +131,11 @@ func main() {
 		log.Fatalf("boards load error: %v", err)
 	}
 
+	trustedIndexers := config.NewTrustedIndexersStore(defaultTrustedIndexersPath(dd))
+	if err := trustedIndexers.Load(); err != nil {
+		log.Printf("trusted indexers load error: %v", err)
+	}
+
 	flex := flexipfs.New(*flexIPFSBase)
 	if isLocalBaseURL(*flexIPFSBase) {
 		if baseDir, _, err := resolveFlexDirs(*flexIPFSBaseDir); err == nil && baseDir != "" {
@@ -144,10 +159,11 @@ func main() {
 	}
 
 	srv := &api.Server{
-		Role:    *role,
-		Storage: st,
-		Boards:  boards,
-		Indexer: ix,
+		Role:            *role,
+		Storage:         st,
+		Boards:          boards,
+		TrustedIndexers: trustedIndexers,
+		Indexer:         ix,
 	}
 	httpServer := &http.Server{
 		Addr:    *httpAddr,
@@ -177,6 +193,10 @@ func defaultDataDir() string {
 		return filepath.Join(dir, "flex-bbs")
 	}
 	return filepath.Join(".", "data")
+}
+
+func defaultTrustedIndexersPath(dataDir string) string {
+	return filepath.Join(dataDir, "trusted_indexers.json")
 }
 
 func runGenKey(args []string) int {
@@ -388,4 +408,224 @@ func runAddBoard(args []string) int {
 	}
 	fmt.Printf("ok boardId=%s\n", *boardID)
 	return 0
+}
+
+func runListTrustedIndexers(args []string) int {
+	fs := flag.NewFlagSet("list-trusted-indexers", flag.ExitOnError)
+	dd := fs.String("data-dir", "", "data directory (defaults to OS config dir)")
+	path := fs.String("trusted-indexers-file", "", "trusted_indexers.json path (defaults to <data-dir>/trusted_indexers.json)")
+	_ = fs.Parse(args)
+
+	data := *dd
+	if data == "" {
+		data = defaultDataDir()
+	}
+	filePath := *path
+	if filePath == "" {
+		filePath = defaultTrustedIndexersPath(data)
+	}
+
+	s := config.NewTrustedIndexersStore(filePath)
+	if err := s.Load(); err != nil {
+		log.Printf("trusted indexers load error: %v", err)
+		return 1
+	}
+	b, err := json.Marshal(s.List())
+	if err != nil {
+		log.Printf("marshal error: %v", err)
+		return 1
+	}
+	fmt.Printf("%s\n", b)
+	return 0
+}
+
+func runAddTrustedIndexer(args []string) int {
+	fs := flag.NewFlagSet("add-trusted-indexer", flag.ExitOnError)
+	baseURL := fs.String("base-url", "", "trusted indexer base URL (http://... or https://...)")
+	dd := fs.String("data-dir", "", "data directory (defaults to OS config dir)")
+	path := fs.String("trusted-indexers-file", "", "trusted_indexers.json path (defaults to <data-dir>/trusted_indexers.json)")
+	_ = fs.Parse(args)
+
+	if strings.TrimSpace(*baseURL) == "" {
+		log.Printf("missing required fields: --base-url")
+		return 2
+	}
+
+	data := *dd
+	if data == "" {
+		data = defaultDataDir()
+	}
+	filePath := *path
+	if filePath == "" {
+		filePath = defaultTrustedIndexersPath(data)
+	}
+
+	s := config.NewTrustedIndexersStore(filePath)
+	if err := s.Load(); err != nil {
+		log.Printf("trusted indexers load error: %v", err)
+		return 1
+	}
+	changed, err := s.Add(*baseURL)
+	if err != nil {
+		log.Printf("add error: %v", err)
+		return 1
+	}
+	if changed {
+		fmt.Printf("ok added=%s\n", strings.TrimSpace(*baseURL))
+	} else {
+		fmt.Printf("ok already-exists=%s\n", strings.TrimSpace(*baseURL))
+	}
+	return 0
+}
+
+func runRemoveTrustedIndexer(args []string) int {
+	fs := flag.NewFlagSet("remove-trusted-indexer", flag.ExitOnError)
+	baseURL := fs.String("base-url", "", "trusted indexer base URL (http://... or https://...)")
+	dd := fs.String("data-dir", "", "data directory (defaults to OS config dir)")
+	path := fs.String("trusted-indexers-file", "", "trusted_indexers.json path (defaults to <data-dir>/trusted_indexers.json)")
+	_ = fs.Parse(args)
+
+	if strings.TrimSpace(*baseURL) == "" {
+		log.Printf("missing required fields: --base-url")
+		return 2
+	}
+
+	data := *dd
+	if data == "" {
+		data = defaultDataDir()
+	}
+	filePath := *path
+	if filePath == "" {
+		filePath = defaultTrustedIndexersPath(data)
+	}
+
+	s := config.NewTrustedIndexersStore(filePath)
+	if err := s.Load(); err != nil {
+		log.Printf("trusted indexers load error: %v", err)
+		return 1
+	}
+	changed, err := s.Remove(*baseURL)
+	if err != nil {
+		log.Printf("remove error: %v", err)
+		return 1
+	}
+	if changed {
+		fmt.Printf("ok removed=%s\n", strings.TrimSpace(*baseURL))
+	} else {
+		fmt.Printf("ok not-found=%s\n", strings.TrimSpace(*baseURL))
+	}
+	return 0
+}
+
+func runSyncTrustedIndexers(args []string) int {
+	fs := flag.NewFlagSet("sync-trusted-indexers", flag.ExitOnError)
+	bootstrapURL := fs.String("bootstrap-url", "", "bootstrap indexer base URL (http://... or https://...)")
+	timeout := fs.Duration("timeout", 10*time.Second, "HTTP timeout")
+	dd := fs.String("data-dir", "", "data directory (defaults to OS config dir)")
+	path := fs.String("trusted-indexers-file", "", "trusted_indexers.json path (defaults to <data-dir>/trusted_indexers.json)")
+	_ = fs.Parse(args)
+
+	raw := strings.TrimSpace(*bootstrapURL)
+	if raw == "" {
+		log.Printf("missing required fields: --bootstrap-url")
+		return 2
+	}
+	normalized, err := config.NormalizeBaseURL(raw)
+	if err != nil {
+		log.Printf("invalid bootstrap url: %v", err)
+		return 2
+	}
+
+	data := *dd
+	if data == "" {
+		data = defaultDataDir()
+	}
+	filePath := *path
+	if filePath == "" {
+		filePath = defaultTrustedIndexersPath(data)
+	}
+
+	s := config.NewTrustedIndexersStore(filePath)
+	if err := s.Load(); err != nil {
+		log.Printf("trusted indexers load error: %v", err)
+		return 1
+	}
+
+	// Always trust the bootstrap itself (the user explicitly chose it).
+	_, _ = s.Add(normalized)
+
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+
+	client := &http.Client{Timeout: *timeout}
+	imported, err := fetchTrustedIndexersFromBootstrap(ctx, client, normalized)
+	if err != nil {
+		log.Printf("bootstrap fetch error: %v", err)
+		return 1
+	}
+
+	added := 0
+	for _, u := range imported {
+		if changed, err := s.Add(u); err == nil && changed {
+			added++
+		}
+	}
+
+	out := map[string]any{
+		"bootstrap": normalized,
+		"imported":  len(imported),
+		"added":     added,
+		"total":     len(s.List()),
+	}
+	b, _ := json.Marshal(out)
+	fmt.Printf("%s\n", b)
+	return 0
+}
+
+func fetchTrustedIndexersFromBootstrap(ctx context.Context, client *http.Client, bootstrapBaseURL string) ([]string, error) {
+	endpoint := strings.TrimRight(bootstrapBaseURL, "/") + "/api/v1/trusted-indexers"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := strings.TrimSpace(string(body))
+		if msg == "" {
+			msg = resp.Status
+		}
+		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, msg)
+	}
+
+	var list []string
+	if err := json.Unmarshal(body, &list); err == nil {
+		return list, nil
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil, err
+	}
+	if v, ok := obj["trustedIndexers"]; ok {
+		if arr, ok := v.([]any); ok {
+			for _, x := range arr {
+				if s, ok := x.(string); ok {
+					list = append(list, s)
+				}
+			}
+		}
+	}
+	return list, nil
 }

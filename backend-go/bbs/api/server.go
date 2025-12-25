@@ -1,13 +1,17 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"flex-bbs/backend-go/bbs/config"
@@ -19,13 +23,19 @@ import (
 )
 
 type Server struct {
-	Role    string
-	Storage *storage.Storage
-	Boards  *config.BoardsStore
-	Indexer *bbsindexer.Indexer
+	Role            string
+	Storage         *storage.Storage
+	Boards          *config.BoardsStore
+	TrustedIndexers *config.TrustedIndexersStore
+	Indexer         *bbsindexer.Indexer
+
+	httpClient        *http.Client
+	seenBoardMetaCIDs *seenSet
 }
 
 func (s *Server) Handler() http.Handler {
+	s.initNetworkDeps()
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", s.healthz)
@@ -40,8 +50,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/search/boards", s.searchBoards)
 	mux.HandleFunc("GET /api/v1/search/threads", s.searchThreads)
 	mux.HandleFunc("GET /api/v1/search/posts", s.searchPosts)
+	mux.HandleFunc("POST /api/v1/announce/board", s.announceBoard)
+	mux.HandleFunc("GET /api/v1/trusted-indexers", s.listTrustedIndexers)
 
 	return mux
+}
+
+func (s *Server) initNetworkDeps() {
+	if s.httpClient == nil {
+		s.httpClient = &http.Client{Timeout: 10 * time.Second}
+	}
+	if s.seenBoardMetaCIDs == nil {
+		s.seenBoardMetaCIDs = newSeenSet(4096, 30*time.Minute)
+	}
 }
 
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
@@ -748,7 +769,7 @@ func (s *Server) tombstonePost(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) searchPosts(w http.ResponseWriter, r *http.Request) {
 	if s.Indexer == nil {
-		writeError(w, http.StatusNotImplemented, "search is available in indexer/full roles")
+		s.proxySearch(w, r, "/api/v1/search/posts")
 		return
 	}
 	ctx := r.Context()
@@ -777,7 +798,7 @@ func (s *Server) searchPosts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) searchBoards(w http.ResponseWriter, r *http.Request) {
 	if s.Indexer == nil {
-		writeError(w, http.StatusNotImplemented, "search is available in indexer/full roles")
+		s.proxySearch(w, r, "/api/v1/search/boards")
 		return
 	}
 	ctx := r.Context()
@@ -816,7 +837,7 @@ func (s *Server) searchBoards(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) searchThreads(w http.ResponseWriter, r *http.Request) {
 	if s.Indexer == nil {
-		writeError(w, http.StatusNotImplemented, "search is available in indexer/full roles")
+		s.proxySearch(w, r, "/api/v1/search/threads")
 		return
 	}
 	ctx := r.Context()
@@ -889,7 +910,327 @@ func (s *Server) advanceBoardLogHead(ctx context.Context, bm *types.BoardMeta, b
 	if s.Indexer != nil {
 		_ = s.Indexer.SyncBoardByMetaCID(ctx, newBoardMetaCID)
 	}
+	s.markSeenBoardMetaCID(newBoardMetaCID)
+	_ = s.forwardBoardAnnounceBestEffort(ctx, newBoardMetaCID)
 	return newBoardMetaCID, nil
+}
+
+func (s *Server) announceBoard(w http.ResponseWriter, r *http.Request) {
+	if s.Role != "indexer" && s.Role != "full" {
+		writeError(w, http.StatusNotImplemented, "announce is available in indexer/full roles")
+		return
+	}
+	ctx := r.Context()
+	var req AnnounceBoardRequest
+	if err := readJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	req.BoardMetaCID = strings.TrimSpace(req.BoardMetaCID)
+	if req.BoardMetaCID == "" {
+		writeError(w, http.StatusBadRequest, "boardMetaCid is required")
+		return
+	}
+
+	if s.seenBoardMetaCIDs != nil && s.seenBoardMetaCIDs.Seen(req.BoardMetaCID) {
+		writeJSON(w, http.StatusOK, AnnounceBoardResponse{
+			BoardMetaCID:  req.BoardMetaCID,
+			Accepted:      false,
+			IgnoredReason: "seen",
+		})
+		return
+	}
+
+	bm, err := s.Storage.LoadBoardMeta(ctx, req.BoardMetaCID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if !bbslog.VerifyBoardMeta(bm) {
+		writeError(w, http.StatusBadRequest, "invalid boardMeta signature")
+		return
+	}
+	boardID := strings.TrimSpace(bm.BoardID)
+	if boardID == "" {
+		writeError(w, http.StatusBadRequest, "boardId is empty in boardMeta")
+		return
+	}
+
+	accepted := true
+	ignoredReason := ""
+
+	if currentCID, currentBM, ok := s.loadBoardByID(ctx, boardID); ok {
+		accept, reason, err := s.shouldAcceptBoardMetaUpdate(ctx, boardID, currentCID, currentBM, req.BoardMetaCID, bm)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		if !accept {
+			accepted = false
+			ignoredReason = reason
+		}
+	}
+
+	s.markSeenBoardMetaCID(req.BoardMetaCID)
+
+	forwarded := 0
+	if accepted {
+		if err := s.Boards.Upsert(boardID, req.BoardMetaCID); err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		if s.Indexer != nil {
+			_ = s.Indexer.SyncBoardByMetaCID(ctx, req.BoardMetaCID)
+		}
+		forwarded = s.forwardBoardAnnounceBestEffort(ctx, req.BoardMetaCID)
+	} else {
+		log.Printf("api announceBoard ignored boardId=%s reason=%s cid=%s", boardID, ignoredReason, req.BoardMetaCID)
+	}
+
+	writeJSON(w, http.StatusOK, AnnounceBoardResponse{
+		BoardID:       boardID,
+		BoardMetaCID:  req.BoardMetaCID,
+		Accepted:      accepted,
+		IgnoredReason: ignoredReason,
+		Forwarded:     forwarded,
+	})
+}
+
+func (s *Server) shouldAcceptBoardMetaUpdate(
+	ctx context.Context,
+	boardID string,
+	currentBoardMetaCID string,
+	current *types.BoardMeta,
+	incomingBoardMetaCID string,
+	incoming *types.BoardMeta,
+) (accept bool, reason string, _ error) {
+	_ = incomingBoardMetaCID
+	currentHead := strOrEmpty(current.LogHeadCID)
+	incomingHead := strOrEmpty(incoming.LogHeadCID)
+
+	if currentHead == incomingHead {
+		return true, "same", nil
+	}
+	if currentHead == "" {
+		return true, "advance", nil
+	}
+	if incomingHead == "" {
+		return false, "rollback", nil
+	}
+
+	isIncomingDesc, err := s.isBoardLogDescendant(ctx, boardID, incomingHead, currentHead)
+	if err != nil {
+		return false, "", err
+	}
+	if isIncomingDesc {
+		return true, "advance", nil
+	}
+
+	isCurrentDesc, err := s.isBoardLogDescendant(ctx, boardID, currentHead, incomingHead)
+	if err != nil {
+		return false, "", err
+	}
+	if isCurrentDesc {
+		return false, "rollback", nil
+	}
+
+	log.Printf(
+		"api announceBoard fork detected boardId=%s currentMeta=%s currentHead=%s incomingMeta=%s incomingHead=%s (keeping current)",
+		boardID, currentBoardMetaCID, currentHead, incomingBoardMetaCID, incomingHead,
+	)
+	return false, "fork", nil
+}
+
+func (s *Server) isBoardLogDescendant(ctx context.Context, boardID, headCID, ancestorCID string) (bool, error) {
+	if headCID == "" || ancestorCID == "" {
+		return false, nil
+	}
+
+	visited := make(map[string]struct{})
+	current := headCID
+	for current != "" {
+		if current == ancestorCID {
+			return true, nil
+		}
+		if _, ok := visited[current]; ok {
+			return false, nil
+		}
+		if len(visited) >= 50_000 {
+			return false, bbslog.ErrLogTooDeep
+		}
+		visited[current] = struct{}{}
+
+		e, err := s.Storage.LoadBoardLogEntry(ctx, current)
+		if err != nil {
+			return false, err
+		}
+		if !bbslog.VerifyBoardLogEntry(e) {
+			return false, fmt.Errorf("invalid boardLogEntry signature cid=%s", current)
+		}
+		if e.BoardID != boardID {
+			return false, fmt.Errorf("boardLogEntry boardId mismatch cid=%s got=%s want=%s", current, e.BoardID, boardID)
+		}
+
+		if e.PrevLogCID == nil || *e.PrevLogCID == "" {
+			break
+		}
+		current = *e.PrevLogCID
+	}
+	return false, nil
+}
+
+func (s *Server) markSeenBoardMetaCID(boardMetaCID string) {
+	s.initNetworkDeps()
+	if s.seenBoardMetaCIDs == nil {
+		return
+	}
+	s.seenBoardMetaCIDs.Mark(strings.TrimSpace(boardMetaCID))
+}
+
+func (s *Server) forwardBoardAnnounceBestEffort(ctx context.Context, boardMetaCID string) int {
+	if s.TrustedIndexers == nil {
+		return 0
+	}
+	if err := s.TrustedIndexers.Load(); err != nil {
+		log.Printf("trusted indexers load error: %v", err)
+		return 0
+	}
+	peers := s.TrustedIndexers.List()
+	if len(peers) == 0 {
+		return 0
+	}
+
+	s.initNetworkDeps()
+	forwarded := 0
+	for _, baseURL := range peers {
+		endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/announce/board"
+		reqBody, _ := json.Marshal(AnnounceBoardRequest{BoardMetaCID: boardMetaCID})
+
+		rctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		req, err := http.NewRequestWithContext(rctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
+		if err != nil {
+			cancel()
+			log.Printf("announce forward: request error base=%s: %v", baseURL, err)
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			cancel()
+			log.Printf("announce forward: http error base=%s: %v", baseURL, err)
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		_ = resp.Body.Close()
+		cancel()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			msg := strings.TrimSpace(string(body))
+			if msg == "" {
+				msg = resp.Status
+			}
+			log.Printf("announce forward: http %d base=%s: %s", resp.StatusCode, baseURL, msg)
+			continue
+		}
+		forwarded++
+	}
+	return forwarded
+}
+
+func (s *Server) listTrustedIndexers(w http.ResponseWriter, r *http.Request) {
+	_ = r
+	if s.TrustedIndexers == nil {
+		writeJSON(w, http.StatusOK, []string{})
+		return
+	}
+	if err := s.TrustedIndexers.Load(); err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.TrustedIndexers.List())
+}
+
+func (s *Server) proxySearch(w http.ResponseWriter, r *http.Request, apiPath string) {
+	if s.TrustedIndexers == nil {
+		writeError(w, http.StatusNotImplemented, "search requires an indexer/full role or a trusted indexer proxy")
+		return
+	}
+	if err := s.TrustedIndexers.Load(); err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	peers := s.TrustedIndexers.List()
+	if len(peers) == 0 {
+		writeError(w, http.StatusNotImplemented, "no trusted indexers configured")
+		return
+	}
+
+	s.initNetworkDeps()
+
+	query := strings.TrimSpace(r.URL.RawQuery)
+
+	var lastErr string
+	for _, baseURL := range peers {
+		target := strings.TrimRight(baseURL, "/") + apiPath
+		if query != "" {
+			target += "?" + query
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+		if err != nil {
+			cancel()
+			lastErr = err.Error()
+			log.Printf("search proxy request error base=%s: %v", baseURL, err)
+			continue
+		}
+
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			cancel()
+			lastErr = err.Error()
+			log.Printf("search proxy http error base=%s: %v", baseURL, err)
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		_ = resp.Body.Close()
+		cancel()
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			ct := strings.TrimSpace(resp.Header.Get("Content-Type"))
+			if ct == "" {
+				ct = "application/json; charset=utf-8"
+			}
+			w.Header().Set("Content-Type", ct)
+			w.WriteHeader(resp.StatusCode)
+			_, _ = w.Write(body)
+			return
+		}
+
+		// For client errors, propagate as-is (likely a bad query).
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusNotFound {
+			ct := strings.TrimSpace(resp.Header.Get("Content-Type"))
+			if ct == "" {
+				ct = "application/json; charset=utf-8"
+			}
+			w.Header().Set("Content-Type", ct)
+			w.WriteHeader(resp.StatusCode)
+			_, _ = w.Write(body)
+			return
+		}
+
+		msg := strings.TrimSpace(string(body))
+		if msg == "" {
+			msg = resp.Status
+		}
+		lastErr = msg
+		log.Printf("search proxy failed base=%s status=%d: %s", baseURL, resp.StatusCode, msg)
+	}
+
+	if lastErr == "" {
+		lastErr = "all trusted indexers failed"
+	}
+	writeError(w, http.StatusBadGateway, "search proxy failed: "+lastErr)
 }
 
 func pubFromPrivKey(privKeyString string) (string, error) {
@@ -968,4 +1309,89 @@ func sortThreadsNewestFirst(threads []ThreadItem) {
 		}
 		return a > b
 	})
+}
+
+func strOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+type seenSet struct {
+	mu  sync.Mutex
+	ttl time.Duration
+	max int
+	m   map[string]time.Time
+}
+
+func newSeenSet(max int, ttl time.Duration) *seenSet {
+	if max <= 0 {
+		max = 1024
+	}
+	if ttl <= 0 {
+		ttl = 5 * time.Minute
+	}
+	return &seenSet{
+		ttl: ttl,
+		max: max,
+		m:   make(map[string]time.Time),
+	}
+}
+
+func (s *seenSet) Seen(key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false
+	}
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.m[key]
+	if !ok {
+		return false
+	}
+	if now.Sub(t) >= s.ttl {
+		delete(s.m, key)
+		return false
+	}
+	return true
+}
+
+func (s *seenSet) Mark(key string) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.m[key] = now
+	s.pruneLocked(now)
+}
+
+func (s *seenSet) pruneLocked(now time.Time) {
+	for k, t := range s.m {
+		if now.Sub(t) >= s.ttl {
+			delete(s.m, k)
+		}
+	}
+	for len(s.m) > s.max {
+		var oldestKey string
+		var oldestTime time.Time
+		first := true
+		for k, t := range s.m {
+			if first || t.Before(oldestTime) {
+				oldestKey = k
+				oldestTime = t
+				first = false
+			}
+		}
+		if first {
+			break
+		}
+		delete(s.m, oldestKey)
+	}
 }

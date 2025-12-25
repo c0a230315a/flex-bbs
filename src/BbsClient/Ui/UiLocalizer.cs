@@ -197,6 +197,12 @@ public sealed class UiLocalizer
         ["Settings menu"] = "設定メニュー",
         ["Client / Backend"] = "クライアント / バックエンド",
         ["Backend control"] = "バックエンド操作",
+        ["Trusted indexers"] = "信頼する Indexer",
+        ["Select trusted indexer"] = "信頼する Indexer を選択",
+        ["Indexer base URL"] = "Indexer base URL",
+        ["Bootstrap indexer base URL"] = "Bootstrap Indexer base URL",
+        ["Import from bootstrap"] = "bootstrap から取得",
+        ["Base URL"] = "Base URL",
 
         ["Language"] = "言語",
         ["UI language"] = "UI 言語",

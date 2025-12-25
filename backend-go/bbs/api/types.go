@@ -84,3 +84,15 @@ type TombstonePostResponse struct {
 	BoardLogCID   string `json:"boardLogCid"`
 	BoardMetaCID  string `json:"boardMetaCid"`
 }
+
+type AnnounceBoardRequest struct {
+	BoardMetaCID string `json:"boardMetaCid"`
+}
+
+type AnnounceBoardResponse struct {
+	BoardID       string `json:"boardId"`
+	BoardMetaCID  string `json:"boardMetaCid"`
+	Accepted      bool   `json:"accepted"`
+	IgnoredReason string `json:"ignoredReason,omitempty"`
+	Forwarded     int    `json:"forwarded"`
+}
