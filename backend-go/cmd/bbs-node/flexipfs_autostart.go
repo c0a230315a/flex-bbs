@@ -23,6 +23,7 @@ type flexIPFSProc struct {
 	cmd         *exec.Cmd
 	stdinWriter io.Closer
 	logFile     *os.File
+	logPath     string
 	done        chan struct{}
 }
 
@@ -30,6 +31,12 @@ func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride, gwEndpoin
 	if !isLocalBaseURL(baseURL) {
 		log.Printf("flex-ipfs autostart skipped (non-local base url): %s", baseURL)
 		return nil, nil
+	}
+
+	startTimeout := 60 * time.Second
+	// Flexible-IPFS can take noticeably longer to start on Windows (especially after rapid restarts).
+	if runtime.GOOS == "windows" {
+		startTimeout = 180 * time.Second
 	}
 
 	// If a local Flexible-IPFS is already running on the target base URL,
@@ -79,7 +86,7 @@ func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride, gwEndpoin
 	//   "Database may be already in use: .../.ipfs/datastore/h2.datastore.mv.db"
 	// Use a simple cross-process lock file to ensure only one starter at a time.
 	lockPath := filepath.Join(flexBaseDir, ".flex-ipfs-start.lock")
-	lockDeadline := time.Now().Add(90 * time.Second)
+	lockDeadline := time.Now().Add(startTimeout + 30*time.Second)
 	for {
 		// Another process might have started flex-ipfs while we were resolving paths.
 		if isFlexIPFSUp(ctx, baseURL) {
@@ -121,13 +128,21 @@ func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride, gwEndpoin
 				}
 				proc = p
 
-				ready, exited := waitForFlexIPFS(ctx, baseURL, 60*time.Second, proc)
+				ready, exited := waitForFlexIPFS(ctx, baseURL, startTimeout, proc)
 				if ready {
 					break
 				}
 
 				// If the API never comes up, kill the child process so the `.ipfs` datastore lock
 				// is released and a future retry can succeed.
+				if proc != nil && strings.TrimSpace(proc.logPath) != "" {
+					log.Printf("flex-ipfs log: %s", proc.logPath)
+				}
+				if proc != nil && strings.TrimSpace(proc.logPath) != "" {
+					if tail := readLogTail(proc.logPath, 16<<10); tail != "" {
+						log.Printf("flex-ipfs log tail:\n%s", tail)
+					}
+				}
 				proc.stop()
 				proc = nil
 
@@ -137,7 +152,7 @@ func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride, gwEndpoin
 				}
 				if !exited || attempt == 3 {
 					release()
-					return nil, fmt.Errorf("flex-ipfs API not ready after 60s (is another flex-ipfs/java process holding .ipfs/datastore?)")
+					return nil, fmt.Errorf("flex-ipfs API not ready after %s (is another flex-ipfs/java process holding .ipfs/datastore?)", startTimeout)
 				}
 				log.Printf("flex-ipfs exited before API was ready; retrying start (%d/3)", attempt+1)
 				time.Sleep(1 * time.Second)
@@ -173,11 +188,43 @@ func (p *flexIPFSProc) stop() {
 	if p == nil || p.cmd == nil || p.cmd.Process == nil {
 		return
 	}
-	_ = p.stdinWriter.Close()
+	if p.stdinWriter != nil {
+		_ = p.stdinWriter.Close()
+	}
+
+	// Closing stdin is often enough to let APIServer exit (it reads from stdin).
+	// Wait briefly before escalating to a kill.
+	if p.done != nil {
+		select {
+		case <-p.done:
+			goto closeLog
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+
 	// Try graceful interrupt first (no-op on Windows), then kill.
-	_ = p.cmd.Process.Signal(os.Interrupt)
-	time.Sleep(2 * time.Second)
+	if runtime.GOOS != "windows" {
+		_ = p.cmd.Process.Signal(os.Interrupt)
+		if p.done != nil {
+			select {
+			case <-p.done:
+				goto closeLog
+			case <-time.After(2 * time.Second):
+			}
+		} else {
+			time.Sleep(2 * time.Second)
+		}
+	}
+
 	_ = p.cmd.Process.Kill()
+	if p.done != nil {
+		select {
+		case <-p.done:
+		case <-time.After(2 * time.Second):
+		}
+	}
+
+closeLog:
 	if p.logFile != nil {
 		_ = p.logFile.Close()
 		p.logFile = nil
@@ -346,7 +393,7 @@ func startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride, logDir string) (*fl
 		}
 	}()
 
-	return &flexIPFSProc{cmd: cmd, stdinWriter: stdinW, logFile: logFile, done: done}, nil
+	return &flexIPFSProc{cmd: cmd, stdinWriter: stdinW, logFile: logFile, logPath: logPath, done: done}, nil
 }
 
 func isCharDevice(f *os.File) bool {
@@ -373,6 +420,41 @@ func extractIP4FromMultiaddr(addr string) string {
 		return ""
 	}
 	return ip
+}
+
+func readLogTail(path string, maxBytes int64) string {
+	path = strings.TrimSpace(path)
+	if path == "" || maxBytes <= 0 {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	st, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	size := st.Size()
+	start := int64(0)
+	if size > maxBytes {
+		start = size - maxBytes
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return ""
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return ""
+	}
+	if start > 0 {
+		if idx := bytes.IndexByte(b, '\n'); idx >= 0 {
+			b = b[idx+1:]
+		}
+	}
+	return strings.TrimSpace(string(b))
 }
 
 func detectLocalIP4() string {

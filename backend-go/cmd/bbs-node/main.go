@@ -353,6 +353,7 @@ func runInitBoard(args []string) int {
 		p, err := maybeStartFlexIPFS(ctx, *flexBase, *flexBaseDir, flexGW, filepath.Join(data, "logs"))
 		if err != nil {
 			log.Printf("flex-ipfs autostart failed: %v", err)
+			return 1
 		} else {
 			flexProc = p
 			defer flexProc.stop()
@@ -435,6 +436,7 @@ func runAddBoard(args []string) int {
 			p, err := maybeStartFlexIPFS(ctx, *flexBase, *flexBaseDir, flexGW, filepath.Join(data, "logs"))
 			if err != nil {
 				log.Printf("flex-ipfs autostart failed: %v", err)
+				return 1
 			} else {
 				flexProc = p
 				defer flexProc.stop()
