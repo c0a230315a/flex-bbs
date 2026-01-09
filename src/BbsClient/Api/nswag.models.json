@@ -1,0 +1,24 @@
+{
+  "runtime": "Net80",
+  "documentGenerator": {
+    "fromDocument": {
+      "url": "../../../docs/openapi.yaml"
+    }
+  },
+  "codeGenerators": {
+    "openApiToCSharpClient": {
+      "className": "BbsApiClient",
+      "namespace": "BbsClient.Api",
+      "generateClientClasses": false,
+      "generateClientInterfaces": false,
+      "generateDtoTypes": true,
+      "generateExceptionClasses": false,
+      "generateResponseClasses": false,
+      "generateNullableReferenceTypes": true,
+      "generateOptionalPropertiesAsNullable": true,
+      "jsonLibrary": "SystemTextJson",
+      "requiredPropertiesMustBeDefined": true,
+      "output": "ApiModels.g.cs"
+    }
+  }
+}

@@ -162,13 +162,13 @@ All BBS objects are stored via `putvaluewithattr?value=...`.
 Use the following conventions:
 
 - BoardMeta:
-  - attrs: `objtype_boardmeta_1`
+  - attrs: `boardmeta_1`
   - tags:  `board_<boardId>`
 - ThreadMeta:
-  - attrs: `objtype_threadmeta_1`
+  - attrs: `threadmeta_1`
   - tags:  `board_<boardId>-thread_<threadId>`
 - BoardLogEntry:
-  - attrs: `objtype_boardlogentry_1`
+  - attrs: `boardlogentry_1`
   - tags:  `board_<boardId>-thread_<threadId>`
 
 To retrieve:
@@ -182,8 +182,8 @@ To retrieve:
   - Create `BoardMeta` (logHeadCid = null).
   - Save it to Flexible-IPFS and record its CID externally (for now).
 - Creating a thread:
-  1. Create root `Post`, save, get `rootPostCid`.
-  2. Create `ThreadMeta`, save, its CID is `threadId`.
+  1. Create `ThreadMeta`, save, its CID is `threadId`.
+  2. Create root `Post` (with `threadId`), save, get `rootPostCid`.
   3. Create `BoardLogEntry` with `op="createThread"`, `threadId`, `postCid = rootPostCid`, `prevLogCid = current logHeadCid`.
   4. Save BoardLogEntry, get new `logHeadCid`.
   5. Update BoardMeta.logHeadCid and save (CID changes).

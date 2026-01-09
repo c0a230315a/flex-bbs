@@ -1,14 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -17,18 +22,50 @@ import (
 type flexIPFSProc struct {
 	cmd         *exec.Cmd
 	stdinWriter io.Closer
+	logFile     *os.File
+	logPath     string
+	done        chan struct{}
 }
 
-func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride string) (*flexIPFSProc, error) {
+func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride, gwEndpointOverride, logDir string) (*flexIPFSProc, error) {
 	if !isLocalBaseURL(baseURL) {
 		log.Printf("flex-ipfs autostart skipped (non-local base url): %s", baseURL)
 		return nil, nil
+	}
+
+	startTimeout := 60 * time.Second
+	// Flexible-IPFS can take noticeably longer to start on Windows (especially after rapid restarts).
+	if runtime.GOOS == "windows" {
+		startTimeout = 180 * time.Second
 	}
 
 	// If a local Flexible-IPFS is already running on the target base URL,
 	// don't start a second instance (avoids port conflicts).
 	if isFlexIPFSUp(ctx, baseURL) {
 		log.Printf("flex-ipfs already running at %s", baseURL)
+		// Best-effort: keep config files in sync even when flex-ipfs is already running.
+		// (Changes only take effect on next restart, but this avoids getting stuck with a stale Bootstrap list.)
+		if flexBaseDir, _, err := resolveFlexDirs(baseDirOverride); err == nil && flexBaseDir != "" {
+			if strings.TrimSpace(gwEndpointOverride) != "" {
+				if err := maybeOverrideKadrttGWEndpoint(flexBaseDir, gwEndpointOverride); err != nil {
+					return nil, err
+				}
+			}
+			if err := ensureKadrttGlobalIP(flexBaseDir, gwEndpointOverride); err != nil {
+				log.Printf("flex-ipfs ensure ipfs.globalip failed: %v", err)
+			}
+			if err := syncFlexIPFSBootstrapConfig(flexBaseDir, gwEndpointOverride); err != nil {
+				log.Printf("flex-ipfs bootstrap config sync failed: %v", err)
+			}
+		}
+		// Best-effort: if we have a gw endpoint configured (or present in kadrtt.properties),
+		// proactively connect so peerlist isn't empty for subsequent operations (e.g. Create Board).
+		if endpoint := resolveFlexIPFSConnectEndpoint(baseDirOverride, gwEndpointOverride); endpoint != "" {
+			if err := flexIPFSSwarmConnect(ctx, baseURL, endpoint); err != nil {
+				log.Printf("flex-ipfs swarm/connect failed: %v", err)
+			}
+			waitForFlexIPFSPeers(ctx, baseURL, 5*time.Second)
+		}
 		return nil, nil
 	}
 
@@ -42,25 +79,156 @@ func maybeStartFlexIPFS(ctx context.Context, baseURL, baseDirOverride string) (*
 		return nil, err
 	}
 
-	proc, err := startFlexIPFS(javaBin, flexBaseDir)
-	if err != nil {
-		return nil, err
-	}
+	// When bbs-client runs subcommands (e.g. `bbs-node init-board`) it starts a second bbs-node process
+	// while the managed backend bbs-node may already be starting/stopping Flexible-IPFS. Without
+	// coordination, both processes can attempt to start Flexible-IPFS against the same `.ipfs` dir and
+	// crash with:
+	//   "Database may be already in use: .../.ipfs/datastore/h2.datastore.mv.db"
+	// Use a simple cross-process lock file to ensure only one starter at a time.
+	lockPath := filepath.Join(flexBaseDir, ".flex-ipfs-start.lock")
+	lockDeadline := time.Now().Add(startTimeout + 30*time.Second)
+	for {
+		// Another process might have started flex-ipfs while we were resolving paths.
+		if isFlexIPFSUp(ctx, baseURL) {
+			log.Printf("flex-ipfs already running at %s", baseURL)
+			// Best-effort: keep config files in sync even when flex-ipfs was started by another process.
+			if err := maybeOverrideKadrttGWEndpoint(flexBaseDir, gwEndpointOverride); err != nil {
+				return nil, err
+			}
+			if err := ensureKadrttGlobalIP(flexBaseDir, gwEndpointOverride); err != nil {
+				log.Printf("flex-ipfs ensure ipfs.globalip failed: %v", err)
+			}
+			if err := syncFlexIPFSBootstrapConfig(flexBaseDir, gwEndpointOverride); err != nil {
+				log.Printf("flex-ipfs bootstrap config sync failed: %v", err)
+			}
+			// Best-effort: explicit connect to a configured gw endpoint (if any).
+			if endpoint := resolveFlexIPFSConnectEndpoint(flexBaseDir, gwEndpointOverride); endpoint != "" {
+				if err := flexIPFSSwarmConnect(ctx, baseURL, endpoint); err != nil {
+					log.Printf("flex-ipfs swarm/connect failed: %v", err)
+				}
+				waitForFlexIPFSPeers(ctx, baseURL, 5*time.Second)
+			}
+			return nil, nil
+		}
 
-	// Best-effort wait for API to come up
-	waitForFlexIPFS(ctx, baseURL, 20*time.Second)
-	return proc, nil
+		release, ok, err := tryAcquireFlexIPFSStartLock(lockPath)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			// We are the starter.
+			// Keep the lock held until the HTTP API is up (prevents concurrent start attempts).
+			// Flexible-IPFS is known to sometimes exit early; retry a few times in that case.
+			var proc *flexIPFSProc
+			for attempt := 1; attempt <= 3; attempt++ {
+				p, err := startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride, logDir)
+				if err != nil {
+					release()
+					return nil, err
+				}
+				proc = p
+
+				ready, exited := waitForFlexIPFS(ctx, baseURL, startTimeout, proc)
+				if ready {
+					break
+				}
+
+				// If the API never comes up, kill the child process so the `.ipfs` datastore lock
+				// is released and a future retry can succeed.
+				if proc != nil && strings.TrimSpace(proc.logPath) != "" {
+					log.Printf("flex-ipfs log: %s", proc.logPath)
+				}
+				if proc != nil && strings.TrimSpace(proc.logPath) != "" {
+					if tail := readLogTail(proc.logPath, 16<<10); tail != "" {
+						log.Printf("flex-ipfs log tail:\n%s", tail)
+					}
+				}
+				proc.stop()
+				proc = nil
+
+				if ctx.Err() != nil {
+					release()
+					return nil, ctx.Err()
+				}
+				if !exited || attempt == 3 {
+					release()
+					return nil, fmt.Errorf("flex-ipfs API not ready after %s (is another flex-ipfs/java process holding .ipfs/datastore?)", startTimeout)
+				}
+				log.Printf("flex-ipfs exited before API was ready; retrying start (%d/3)", attempt+1)
+				time.Sleep(1 * time.Second)
+			}
+			release()
+			// Best-effort explicit connect to a configured gw endpoint (if any).
+			if endpoint := resolveFlexIPFSConnectEndpoint(flexBaseDir, gwEndpointOverride); endpoint != "" {
+				if err := flexIPFSSwarmConnect(ctx, baseURL, endpoint); err != nil {
+					log.Printf("flex-ipfs swarm/connect failed: %v", err)
+				}
+			}
+			// Best-effort wait for bootstrap to populate peers (prevents early put failures).
+			waitForFlexIPFSPeers(ctx, baseURL, 5*time.Second)
+			return proc, nil
+		}
+
+		// Another process is starting flex-ipfs; wait for it to come up.
+		if st, statErr := os.Stat(lockPath); statErr == nil {
+			// Stale lock cleanup (e.g. a crashed starter).
+			if time.Since(st.ModTime()) > 5*time.Minute {
+				_ = os.Remove(lockPath)
+				continue
+			}
+		}
+		if time.Now().After(lockDeadline) {
+			return nil, fmt.Errorf("timeout waiting for flex-ipfs start lock: %s", lockPath)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 func (p *flexIPFSProc) stop() {
 	if p == nil || p.cmd == nil || p.cmd.Process == nil {
 		return
 	}
-	_ = p.stdinWriter.Close()
+	if p.stdinWriter != nil {
+		_ = p.stdinWriter.Close()
+	}
+
+	// Closing stdin is often enough to let APIServer exit (it reads from stdin).
+	// Wait briefly before escalating to a kill.
+	if p.done != nil {
+		select {
+		case <-p.done:
+			goto closeLog
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+
 	// Try graceful interrupt first (no-op on Windows), then kill.
-	_ = p.cmd.Process.Signal(os.Interrupt)
-	time.Sleep(2 * time.Second)
+	if runtime.GOOS != "windows" {
+		_ = p.cmd.Process.Signal(os.Interrupt)
+		if p.done != nil {
+			select {
+			case <-p.done:
+				goto closeLog
+			case <-time.After(2 * time.Second):
+			}
+		} else {
+			time.Sleep(2 * time.Second)
+		}
+	}
+
 	_ = p.cmd.Process.Kill()
+	if p.done != nil {
+		select {
+		case <-p.done:
+		case <-time.After(2 * time.Second):
+		}
+	}
+
+closeLog:
+	if p.logFile != nil {
+		_ = p.logFile.Close()
+		p.logFile = nil
+	}
 }
 
 func isLocalBaseURL(baseURL string) bool {
@@ -108,6 +276,17 @@ func resolveFlexDirs(baseOverride string) (flexBaseDir, runtimeDir string, err e
 			break
 		}
 	}
+
+	// Ensure paths are absolute; autostart needs a stable layout regardless of the
+	// caller's working directory and the bbs-node executable location.
+	if abs, absErr := filepath.Abs(flexBaseDir); absErr == nil {
+		flexBaseDir = abs
+	}
+	if runtimeDir != "" {
+		if abs, absErr := filepath.Abs(runtimeDir); absErr == nil {
+			runtimeDir = abs
+		}
+	}
 	return flexBaseDir, runtimeDir, nil
 }
 
@@ -129,7 +308,7 @@ func findJavaBin(runtimeDir string) (string, error) {
 	return exec.LookPath("java")
 }
 
-func startFlexIPFS(javaBin, flexBaseDir string) (*flexIPFSProc, error) {
+func startFlexIPFS(javaBin, flexBaseDir, gwEndpointOverride, logDir string) (*flexIPFSProc, error) {
 	if err := os.MkdirAll(filepath.Join(flexBaseDir, "providers"), 0o755); err != nil {
 		return nil, err
 	}
@@ -139,6 +318,16 @@ func startFlexIPFS(javaBin, flexBaseDir string) (*flexIPFSProc, error) {
 	attrPath := filepath.Join(flexBaseDir, "attr")
 	if _, err := os.Stat(attrPath); os.IsNotExist(err) {
 		_ = os.WriteFile(attrPath, []byte{}, 0o644)
+	}
+
+	if err := maybeOverrideKadrttGWEndpoint(flexBaseDir, gwEndpointOverride); err != nil {
+		return nil, err
+	}
+	if err := ensureKadrttGlobalIP(flexBaseDir, gwEndpointOverride); err != nil {
+		return nil, err
+	}
+	if err := syncFlexIPFSBootstrapConfig(flexBaseDir, gwEndpointOverride); err != nil {
+		return nil, err
 	}
 
 	// Keep stdin open to avoid APIServer exiting on EOF.
@@ -151,17 +340,52 @@ func startFlexIPFS(javaBin, flexBaseDir string) (*flexIPFSProc, error) {
 		"IPFS_HOME="+filepath.Join(flexBaseDir, ".ipfs"),
 	)
 	cmd.Stdin = stdinR
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var logFile *os.File
+	logPath := filepath.Join(flexBaseDir, "flex-ipfs.log")
+	if strings.TrimSpace(logDir) != "" {
+		logPath = filepath.Join(logDir, "flex-ipfs.log")
+	}
+	_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
+	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+		logFile = f
+	}
+
+	if !isCharDevice(os.Stdout) || !isCharDevice(os.Stderr) {
+		// When bbs-node is run with stdout/stderr redirected (e.g., from the TUI),
+		// inheriting those pipes can keep the parent process' output streams open
+		// even after bbs-node exits, which can make callers appear to "hang".
+		// Log to a file instead in that case.
+		if logFile != nil {
+			cmd.Stdout = logFile
+			cmd.Stderr = logFile
+		} else {
+			cmd.Stdout = io.Discard
+			cmd.Stderr = io.Discard
+		}
+	} else {
+		if logFile != nil {
+			mw := io.MultiWriter(os.Stdout, logFile)
+			cmd.Stdout = mw
+			cmd.Stderr = mw
+		} else {
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+		}
+	}
 
 	if err := cmd.Start(); err != nil {
 		_ = stdinW.Close()
+		if logFile != nil {
+			_ = logFile.Close()
+		}
 		return nil, err
 	}
 
 	log.Printf("flex-ipfs started pid=%d baseDir=%s java=%s", cmd.Process.Pid, flexBaseDir, javaBin)
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		if err := cmd.Wait(); err != nil {
 			log.Printf("flex-ipfs exited: %v", err)
 		} else {
@@ -169,10 +393,593 @@ func startFlexIPFS(javaBin, flexBaseDir string) (*flexIPFSProc, error) {
 		}
 	}()
 
-	return &flexIPFSProc{cmd: cmd, stdinWriter: stdinW}, nil
+	return &flexIPFSProc{cmd: cmd, stdinWriter: stdinW, logFile: logFile, logPath: logPath, done: done}, nil
 }
 
-func waitForFlexIPFS(ctx context.Context, baseURL string, timeout time.Duration) {
+func isCharDevice(f *os.File) bool {
+	st, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (st.Mode() & os.ModeCharDevice) != 0
+}
+
+func extractIP4FromMultiaddr(addr string) string {
+	const prefix = "/ip4/"
+	i := strings.Index(addr, prefix)
+	if i < 0 {
+		return ""
+	}
+	rest := addr[i+len(prefix):]
+	j := strings.IndexByte(rest, '/')
+	if j <= 0 {
+		return ""
+	}
+	ip := rest[:j]
+	if net.ParseIP(ip) == nil {
+		return ""
+	}
+	return ip
+}
+
+func readLogTail(path string, maxBytes int64) string {
+	path = strings.TrimSpace(path)
+	if path == "" || maxBytes <= 0 {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	st, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	size := st.Size()
+	start := int64(0)
+	if size > maxBytes {
+		start = size - maxBytes
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return ""
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return ""
+	}
+	if start > 0 {
+		if idx := bytes.IndexByte(b, '\n'); idx >= 0 {
+			b = b[idx+1:]
+		}
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func detectLocalIP4() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil {
+				continue
+			}
+			ip = ip.To4()
+			if ip == nil || ip.IsLoopback() {
+				continue
+			}
+			return ip.String()
+		}
+	}
+	return ""
+}
+
+func isSelfGWEndpoint(endpoint string) bool {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return false
+	}
+	ip := extractIP4FromMultiaddr(endpoint)
+	if ip == "" {
+		return false
+	}
+	if ip == "127.0.0.1" || ip == "0.0.0.0" {
+		return true
+	}
+	local := detectLocalIP4()
+	return local != "" && ip == local
+}
+
+func maybeOverrideKadrttGWEndpoint(flexBaseDir, endpoint string) error {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return nil
+	}
+	if strings.ContainsAny(endpoint, "\r\n") {
+		return fmt.Errorf("FLEXIPFS_GW_ENDPOINT must be a single line")
+	}
+	// If the user provided a gw endpoint override, apply it even when it points to ourselves.
+	// Bundled `kadrtt.properties` often contains a stale/private bootstrap endpoint; keeping it can
+	// leave the peer list empty and break core flows (Create/Add board) when Flexible-IPFS is already running.
+	if current, _ := readKadrttGWEndpoint(flexBaseDir); strings.TrimSpace(current) == endpoint {
+		log.Printf("flex-ipfs: skip ipfs.endpoint override (already set): %s", endpoint)
+		return nil
+	}
+
+	propsPath := filepath.Join(flexBaseDir, "kadrtt.properties")
+	b, err := os.ReadFile(propsPath)
+	if err != nil {
+		return err
+	}
+	original := string(b)
+
+	lineSep := "\n"
+	if strings.Contains(original, "\r\n") {
+		lineSep = "\r\n"
+	}
+
+	reEndpoint := regexp.MustCompile(`^(\s*)ipfs\.endpoint(\s*[:=]).*$`)
+	parts := strings.SplitAfter(original, lineSep)
+
+	var out strings.Builder
+	out.Grow(len(original) + len(endpoint) + 64)
+
+	replacedEndpoint := false
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		suffix := ""
+		line := part
+		if strings.HasSuffix(part, lineSep) {
+			suffix = lineSep
+			line = strings.TrimSuffix(part, lineSep)
+		}
+
+		trimLeft := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimLeft, "#") || strings.HasPrefix(trimLeft, "!") {
+			out.WriteString(line)
+			out.WriteString(suffix)
+			continue
+		}
+
+		if m := reEndpoint.FindStringSubmatch(line); m != nil {
+			out.WriteString(m[1])
+			out.WriteString("ipfs.endpoint")
+			out.WriteString(m[2])
+			out.WriteString(endpoint)
+			out.WriteString(suffix)
+			replacedEndpoint = true
+			continue
+		}
+
+		out.WriteString(line)
+		out.WriteString(suffix)
+	}
+
+	if !replacedEndpoint {
+		if !strings.HasSuffix(out.String(), lineSep) && out.Len() > 0 {
+			out.WriteString(lineSep)
+		}
+		out.WriteString("ipfs.endpoint=")
+		out.WriteString(endpoint)
+		out.WriteString(lineSep)
+	}
+
+	st, statErr := os.Stat(propsPath)
+	mode := os.FileMode(0o644)
+	if statErr == nil {
+		mode = st.Mode().Perm()
+	}
+	if err := os.WriteFile(propsPath, []byte(out.String()), mode); err != nil {
+		return err
+	}
+	log.Printf("flex-ipfs: set ipfs.endpoint=%s (%s)", endpoint, propsPath)
+	return nil
+}
+
+func ensureKadrttGlobalIP(flexBaseDir, gwEndpointOverride string) error {
+	propsPath := filepath.Join(flexBaseDir, "kadrtt.properties")
+	b, err := os.ReadFile(propsPath)
+	if err != nil {
+		return err
+	}
+	original := string(b)
+
+	var existing string
+	for _, raw := range strings.Split(original, "\n") {
+		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
+			continue
+		}
+		if !strings.HasPrefix(line, "ipfs.globalip") {
+			continue
+		}
+		if idx := strings.IndexAny(line, "=:"); idx >= 0 {
+			existing = strings.TrimSpace(line[idx+1:])
+			break
+		}
+	}
+	existing = strings.TrimSpace(existing)
+
+	ip := detectLocalIP4()
+	if ip == "" {
+		// Best-effort only; leave as-is.
+		return nil
+	}
+	if existing != "" && existing != "null" {
+		if existing == ip {
+			return nil
+		}
+		// If a client previously ran with mDNS discovery enabled, older builds could incorrectly
+		// write the remote gw endpoint IP into ipfs.globalip. Repair that case automatically.
+		if remoteIP := extractIP4FromMultiaddr(gwEndpointOverride); remoteIP != "" && existing == remoteIP {
+			// proceed to rewrite to local ip below
+		} else {
+			return nil
+		}
+	}
+
+	lineSep := "\n"
+	if strings.Contains(original, "\r\n") {
+		lineSep = "\r\n"
+	}
+
+	reGlobalIP := regexp.MustCompile(`^(\s*)ipfs\.globalip(\s*[:=]).*$`)
+	parts := strings.SplitAfter(original, lineSep)
+
+	var out strings.Builder
+	out.Grow(len(original) + len(ip) + 64)
+
+	replaced := false
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		suffix := ""
+		line := part
+		if strings.HasSuffix(part, lineSep) {
+			suffix = lineSep
+			line = strings.TrimSuffix(part, lineSep)
+		}
+
+		trimLeft := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimLeft, "#") || strings.HasPrefix(trimLeft, "!") {
+			out.WriteString(line)
+			out.WriteString(suffix)
+			continue
+		}
+
+		if m := reGlobalIP.FindStringSubmatch(line); m != nil {
+			out.WriteString(m[1])
+			out.WriteString("ipfs.globalip")
+			out.WriteString(m[2])
+			out.WriteString(ip)
+			out.WriteString(suffix)
+			replaced = true
+			continue
+		}
+
+		out.WriteString(line)
+		out.WriteString(suffix)
+	}
+
+	if !replaced {
+		if !strings.HasSuffix(out.String(), lineSep) && out.Len() > 0 {
+			out.WriteString(lineSep)
+		}
+		out.WriteString("ipfs.globalip=")
+		out.WriteString(ip)
+		out.WriteString(lineSep)
+	}
+
+	st, statErr := os.Stat(propsPath)
+	mode := os.FileMode(0o644)
+	if statErr == nil {
+		mode = st.Mode().Perm()
+	}
+	if err := os.WriteFile(propsPath, []byte(out.String()), mode); err != nil {
+		return err
+	}
+	log.Printf("flex-ipfs: set ipfs.globalip=%s (%s)", ip, propsPath)
+	return nil
+}
+
+func syncFlexIPFSBootstrapConfig(flexBaseDir, gwEndpointOverride string) error {
+	desired := strings.TrimSpace(resolveFlexIPFSConnectEndpoint(flexBaseDir, gwEndpointOverride))
+	if desired == "" {
+		return nil
+	}
+
+	configPath := filepath.Join(flexBaseDir, ".ipfs", "config")
+	b, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// No config yet; APIServer will create it using Kad.GW_ENDPOINT (from kadrtt.properties).
+			return nil
+		}
+		return err
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return fmt.Errorf("parse %s: %w", configPath, err)
+	}
+
+	var bootstrap []string
+	if raw, ok := cfg["Bootstrap"]; ok {
+		if arr, ok := raw.([]any); ok {
+			for _, v := range arr {
+				s, ok := v.(string)
+				if !ok {
+					continue
+				}
+				s = strings.TrimSpace(s)
+				if s == "" {
+					continue
+				}
+				bootstrap = append(bootstrap, s)
+			}
+		}
+	}
+
+	for _, s := range bootstrap {
+		if s == desired {
+			return nil
+		}
+	}
+
+	var updated []string
+	switch len(bootstrap) {
+	case 0:
+		updated = []string{desired}
+	case 1:
+		// The most common case: a stale single bootstrap from the bundled kadrtt.properties.
+		updated = []string{desired}
+	default:
+		updated = append([]string{desired}, bootstrap...)
+	}
+
+	cfg["Bootstrap"] = updated
+	out, err := json.MarshalIndent(cfg, "", "\t")
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", configPath, err)
+	}
+	out = append(out, '\n')
+
+	st, statErr := os.Stat(configPath)
+	mode := os.FileMode(0o644)
+	if statErr == nil {
+		mode = st.Mode().Perm()
+	}
+	if err := os.WriteFile(configPath, out, mode); err != nil {
+		return err
+	}
+
+	log.Printf("flex-ipfs: updated .ipfs/config bootstrap (added %s)", desired)
+	return nil
+}
+
+func removeFlexIPFSBootstrapEntry(flexBaseDir, endpoint string) error {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return nil
+	}
+
+	configPath := filepath.Join(flexBaseDir, ".ipfs", "config")
+	b, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return fmt.Errorf("parse %s: %w", configPath, err)
+	}
+
+	raw, ok := cfg["Bootstrap"]
+	if !ok {
+		return nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+
+	var updated []string
+	removed := false
+	for _, v := range arr {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if s == endpoint {
+			removed = true
+			continue
+		}
+		updated = append(updated, s)
+	}
+	if !removed {
+		return nil
+	}
+
+	cfg["Bootstrap"] = updated
+	out, err := json.MarshalIndent(cfg, "", "\t")
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", configPath, err)
+	}
+	out = append(out, '\n')
+
+	st, statErr := os.Stat(configPath)
+	mode := os.FileMode(0o644)
+	if statErr == nil {
+		mode = st.Mode().Perm()
+	}
+	if err := os.WriteFile(configPath, out, mode); err != nil {
+		return err
+	}
+
+	log.Printf("flex-ipfs: removed bootstrap entry (self): %s", endpoint)
+	return nil
+}
+
+func tryAcquireFlexIPFSStartLock(lockPath string) (release func(), acquired bool, err error) {
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err == nil {
+		_, _ = fmt.Fprintf(f, "pid=%d\nstarted=%s\n", os.Getpid(), time.Now().Format(time.RFC3339Nano))
+		_ = f.Close()
+		return func() { _ = os.Remove(lockPath) }, true, nil
+	}
+	if os.IsExist(err) {
+		return func() {}, false, nil
+	}
+	return func() {}, false, err
+}
+
+func resolveFlexIPFSConnectEndpoint(baseDirOrOverride string, gwEndpointOverride string) string {
+	if v := strings.TrimSpace(gwEndpointOverride); v != "" {
+		// If the gw endpoint is explicitly set to ourselves, treat it as an advertisement-only hint and
+		// fall back to the configured ipfs.endpoint for actual bootstrapping.
+		if isSelfGWEndpoint(v) {
+			goto fromConfig
+		}
+		return v
+	}
+
+	// Allow manual edits in flexible-ipfs-base/kadrtt.properties to work without requiring
+	// passing --flexipfs-gw-endpoint every time.
+fromConfig:
+	baseDir := strings.TrimSpace(baseDirOrOverride)
+	if baseDir == "" || !dirExists(baseDir) {
+		if bd, _, err := resolveFlexDirs(baseDirOrOverride); err == nil && bd != "" {
+			baseDir = bd
+		}
+	}
+	if baseDir == "" {
+		return ""
+	}
+	if v, err := readKadrttGWEndpoint(baseDir); err == nil {
+		return v
+	}
+	return ""
+}
+
+func readKadrttGWEndpoint(flexBaseDir string) (string, error) {
+	propsPath := filepath.Join(flexBaseDir, "kadrtt.properties")
+	b, err := os.ReadFile(propsPath)
+	if err != nil {
+		return "", err
+	}
+	for _, raw := range strings.Split(string(b), "\n") {
+		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
+			continue
+		}
+		if !strings.HasPrefix(line, "ipfs.endpoint") {
+			continue
+		}
+		if idx := strings.IndexAny(line, "=:"); idx >= 0 {
+			if v := strings.TrimSpace(line[idx+1:]); v != "" {
+				return v, nil
+			}
+		}
+	}
+	return "", nil
+}
+
+func waitForFlexIPFS(ctx context.Context, baseURL string, timeout time.Duration, proc *flexIPFSProc) (ready bool, exited bool) {
+	deadline := time.Now().Add(timeout)
+	endpoint := strings.TrimRight(baseURL, "/") + "/dht/peerlist"
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return false, false
+		default:
+		}
+		if proc != nil && proc.done != nil {
+			select {
+			case <-proc.done:
+				return false, true
+			default:
+			}
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+		resp, err := client.Do(req)
+		if err == nil && resp != nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+				log.Printf("flex-ipfs API ready: %s", endpoint)
+				return true, false
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	log.Printf("flex-ipfs API not ready after %s", timeout)
+	return false, false
+}
+
+func flexIPFSSwarmConnect(ctx context.Context, baseURL, addr string) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return nil
+	}
+	u := strings.TrimRight(baseURL, "/") + "/swarm/connect"
+	q := url.Values{}
+	q.Set("arg", addr)
+	u += "?" + q.Encode()
+
+	client := &http.Client{Timeout: 8 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	// Flexible-IPFS (ipfs-ncl.jar) doesn't implement /swarm/connect; ignore.
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	msg := strings.TrimSpace(string(body))
+	if msg == "" {
+		msg = resp.Status
+	}
+	return fmt.Errorf("flex-ipfs swarm/connect http %d: %s", resp.StatusCode, msg)
+}
+
+func waitForFlexIPFSPeers(ctx context.Context, baseURL string, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	endpoint := strings.TrimRight(baseURL, "/") + "/dht/peerlist"
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -181,15 +988,22 @@ func waitForFlexIPFS(ctx context.Context, baseURL string, timeout time.Duration)
 		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
 		resp, err := client.Do(req)
 		if err == nil && resp != nil {
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 			_ = resp.Body.Close()
-			if resp.StatusCode >= 200 && resp.StatusCode < 500 {
-				log.Printf("flex-ipfs API ready: %s", endpoint)
-				return
+			if readErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 500 {
+				var s string
+				if jsonErr := json.Unmarshal(bytes.TrimSpace(body), &s); jsonErr == nil {
+					if strings.TrimSpace(s) != "" {
+						return
+					}
+				} else if strings.TrimSpace(string(body)) != "" {
+					return
+				}
 			}
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	log.Printf("flex-ipfs API not ready after %s", timeout)
+	log.Printf("flex-ipfs peers not discovered after %s", timeout)
 }
 
 func isFlexIPFSUp(ctx context.Context, baseURL string) bool {

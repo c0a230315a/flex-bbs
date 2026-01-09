@@ -1,0 +1,58 @@
+services:
+  full:
+    build:
+      context: ../..
+      dockerfile: docker/bbs-node/Dockerfile
+    environment:
+      # Optional: set the bootstrap / gw endpoint (multiaddr) for this node.
+      # Example: /ip4/192.168.0.10/tcp/4001/ipfs/<PeerID>
+      FLEXIPFS_GW_ENDPOINT: ${FULL_FLEXIPFS_GW_ENDPOINT:-}
+    extra_hosts:
+      - "checkip.amazonaws.com:127.0.0.1"
+    command:
+      - "--role=full"
+      - "--http"
+      - "${FULL_HTTP_BIND:-0.0.0.0:18080}"
+      - "--data-dir"
+      - "/data"
+      - "--autostart-flexipfs=true"
+      - "--flexipfs-mdns=false"
+    ports:
+      - "${FULL_HTTP_PORT:-18080}:18080"
+    volumes:
+      - full-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:18080/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+  client:
+    build:
+      context: ../..
+      dockerfile: docker/bbs-node/Dockerfile
+    environment:
+      FLEXIPFS_GW_ENDPOINT: ${CLIENT_FLEXIPFS_GW_ENDPOINT:-}
+    extra_hosts:
+      - "checkip.amazonaws.com:127.0.0.1"
+    command:
+      - "--role=client"
+      - "--http"
+      - "${CLIENT_HTTP_BIND:-0.0.0.0:18080}"
+      - "--data-dir"
+      - "/data"
+      - "--autostart-flexipfs=true"
+      - "--flexipfs-mdns=false"
+    ports:
+      - "${CLIENT_HTTP_PORT:-28080}:18080"
+    volumes:
+      - client-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:18080/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+volumes:
+  full-data:
+  client-data:
