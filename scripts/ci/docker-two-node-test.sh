@@ -162,7 +162,10 @@ fi
 
 full_ma="/ip4/${full_ip}/tcp/4001/ipfs/${full_peer}"
 
-FULL_SET_SELF_ENDPOINT="${FULL_SET_SELF_ENDPOINT:-1}"
+# NOTE: Setting the full node's ipfs.endpoint to itself can trigger flex-ipfs self-bootstrapping,
+# which has been observed to destabilize the embedded DHT and cause the client flex-ipfs API to
+# never become ready in CI. Keep this off by default; enable only for debugging.
+FULL_SET_SELF_ENDPOINT="${FULL_SET_SELF_ENDPOINT:-0}"
 
 if [[ "${FULL_SET_SELF_ENDPOINT}" == "1" ]]; then
   echo "Configuring full flex-ipfs ipfs.endpoint to self (${full_ma})..." >&2
